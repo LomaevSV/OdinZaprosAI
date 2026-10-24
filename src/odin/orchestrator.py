@@ -49,7 +49,7 @@ from odin.core.trip import (
     judge_availability,
     offer_staleness,
 )
-from odin.llm.composer import ComposerFacts, safe_answer
+from odin.llm.composer import ComposerFacts, money_text, safe_answer
 from odin.llm.gateway import LlmGateway
 from odin.llm.interpreter import (
     InterpretationOutcome,
@@ -74,6 +74,17 @@ STOP_BLOCKED = "blocked_by_decision"
 # История явных выборов пользователя (REPLAN-02): последняя запись определяет, что выбрано явно.
 SELECTION_EVENT = "selection_applied"
 SELECTION_KEPT_EVENT = "selection_kept"
+
+# UC-04: число лучших кандидатов, для которых оценивается стоимость и время пути (план §4 S5).
+INSPIRATION_TOP_N = 3
+
+
+def _candidate_line(candidate: Any) -> str:
+    """Строка кандидата для ответа: сумма только из оценки кода, иначе — честное примечание."""
+    cost = candidate.estimated_cost
+    if cost is not None and cost.amount is not None:
+        return f"{candidate.place.name}, от {money_text(cost.amount, cost.currency)} — {candidate.cost_note}"
+    return f"{candidate.place.name}, {candidate.cost_note}"
 
 
 def _selection_note(selections: dict[str, str]) -> str | None:
@@ -268,7 +279,7 @@ class Orchestrator:
         assert request is not None
         if request.destination is None:
             state = self._inspiration_turn(state, request)
-            names = tuple(candidate.place.name for candidate in state.candidate_destinations)
+            names = tuple(_candidate_line(candidate) for candidate in state.candidate_destinations)
             text_out, verified = safe_answer(ComposerFacts(candidates=names))
             return _TurnDraft(state, text_out, facts_verified=verified)
 
@@ -332,28 +343,35 @@ class Orchestrator:
     # ------------------------------------------------------------------ вдохновение
 
     def _inspiration_turn(self, state: TripState, request: TripRequest) -> TripState:
+        origin = normalize_city(request.origin.name if request.origin else None)
         tool_request = self._tool_request(
             request_id=request.request_id,
             tool="suggest_destinations",
-            arguments={"wishes": list(request.wishes_tags), "limit": 3},
+            arguments={
+                "wishes": list(request.wishes_tags),
+                "limit": INSPIRATION_TOP_N,
+                "exclude": origin.name if origin else None,
+            },
         )
         result = self._invoke(tool_request)
         candidates = []
         if result is not None and result.status in ("ok", "partial") and isinstance(result.data, dict):
             values = result.data.get("candidates") or []
             candidates = [value for value in values]
+        collector = _Collector()
+        candidates = self._estimate_candidates(request, candidates, collector)
         state = state.evolve(
             **{
                 "candidate_destinations": [*candidates],
                 "status": "planned",
                 "search_termination": SearchTermination(
-                    reason=STOP_SOURCES,
-                    checked_sources=["odin_demo_catalog"],
-                    unchecked_sources=[],
+                    reason=collector.stop_reason or STOP_SOURCES,  # type: ignore[arg-type]
+                    checked_sources=sorted({"odin_demo_catalog", *collector.checked_sources}),
+                    unchecked_sources=[value for value in collector.unchecked_sources],  # type: ignore[misc]
                     candidates_seen=len(candidates),
                     confirmed_matches=0,
                     unknown_candidates=len(candidates),
-                    can_continue=False,
+                    can_continue=collector.stop_reason in (STOP_LIMITS, STOP_DEADLINE),
                 ),
                 "history": [
                     *state.history,
@@ -364,6 +382,118 @@ class Orchestrator:
             }
         )
         return state
+
+    def _estimate_candidates(
+        self, request: TripRequest, candidates: list[Any], collector: _Collector
+    ) -> list[Any]:
+        """UC-04: ориентировочная стоимость и время пути — только при известных городе отправления,
+        датах и составе группы (UC-03: даты не предполагаются). Иначе — «стоимость требует дат».
+
+        Итог всегда неполный: стоимость трансфера не оценивается (DEC-18), сборы отеля не подтверждены.
+        """
+        date_range = request.date_range
+        adults = request.party.adults
+        origin = normalize_city(request.origin.name if request.origin else None)
+        if date_range is None or not adults:
+            return candidates
+        if origin is None:
+            return [
+                candidate.evolve(
+                    **{"cost_note": "стоимость не оценена: город отправления вне демо-справочника"}
+                )
+                for candidate in candidates
+            ]
+        estimated: list[Any] = []
+        for candidate in candidates:
+            transport = self._invoke(
+                self._tool_request(
+                    request_id=request.request_id,
+                    tool="search_transport",
+                    arguments={
+                        "origin": origin.name,
+                        "destination": candidate.place.name,
+                        "date": date_range.start.isoformat(),
+                        "return_date": (
+                            date_range.end.isoformat() if request.return_trip is not False else None
+                        ),
+                        "adults": adults,
+                        "children_ages": list(request.party.children_ages),
+                        "modes": [],
+                        "ttl_minutes": self.limits.offer_ttl_minutes,
+                    },
+                ),
+                collector,
+            )
+            hotels = self._invoke(
+                self._tool_request(
+                    request_id=request.request_id,
+                    tool="search_hotels",
+                    arguments={
+                        "city": candidate.place.name,
+                        "check_in": date_range.start.isoformat(),
+                        "check_out": date_range.end.isoformat(),
+                        "adults": adults,
+                        "children_ages": list(request.party.children_ages),
+                        "rooms": request.party.rooms or 1,
+                        "pets": bool(request.party.pets),
+                        "ttl_minutes": self.limits.offer_ttl_minutes,
+                    },
+                ),
+                collector,
+            )
+            estimated.append(self._candidate_estimate(candidate, request, transport, hotels))
+        return estimated
+
+    def _candidate_estimate(self, candidate: Any, request: TripRequest, transport: Any, hotels: Any) -> Any:
+        def offers(result: Any) -> list[Any]:
+            if result is None or not isinstance(result.data, dict):
+                return []
+            return list(result.data.get("offers") or [])
+
+        def cheapest(items: list[Any], amount: Any) -> Any | None:
+            priced = [item for item in items if amount(item) is not None]
+            return min(priced, key=lambda item: (amount(item), item.offer_id)) if priced else None
+
+        transport_offers = offers(transport)
+        outbound = cheapest(
+            [o for o in transport_offers if o.direction == "outbound"], lambda o: o.price.amount
+        )
+        back = cheapest([o for o in transport_offers if o.direction == "return"], lambda o: o.price.amount)
+        hotel = cheapest(offers(hotels), lambda o: o.price_total.amount)
+        parts = [
+            ("outbound", outbound.price if outbound else None),
+            ("hotel", hotel.price_total if hotel else None),
+        ]
+        if request.return_trip is not False:
+            parts.append(("return", back.price if back else None))
+        missing = [role for role, price in parts if price is None]
+        known = [(role, price) for role, price in parts if price is not None]
+        if not known:
+            return candidate.evolve(
+                **{
+                    "cost_note": "стоимость не оценена: источники не вернули вариантов (это не значит, что их нет)"
+                }
+            )
+        as_of = self._now()
+        source = mock_source(
+            "estimate_destination_cost", candidate.candidate_id, as_of, source_type="computed"
+        )
+        totals = sum_prices([price for _, price in known], [role for role, _ in known])
+        # Трансфер не оценивается (DEC-18): итог не может быть полным.
+        totals = replace(
+            totals,
+            completeness="partial",
+            unknown_reason=totals.unknown_reason or "price_incomplete",
+            partial_components=(*totals.partial_components, *missing, "transfer"),
+        )
+        cost = total_price(totals, source, as_of)
+        duration = outbound.duration_minutes if outbound else None
+        note = "ДЕМО-оценка за группу и период: дорога и отель; трансфер не оценён (DEC-18)"
+        if missing:
+            note += "; не найдено: " + ", ".join(missing)
+        if duration is not None:
+            note += f"; в пути туда {duration // 60} ч {duration % 60:02d} мин"
+        return candidate.evolve(**{"estimated_cost": cost, "cost_note": note})
 
     # ------------------------------------------------------------------ поиск
 

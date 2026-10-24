@@ -102,7 +102,11 @@ def compose_answer(facts: ComposerFacts) -> str:
 
     if facts.destination is None and facts.candidates:
         parts.append("Направление не задано. Заготовка вдохновения (ДЕМО):")
-        parts.extend(f"— {name}, стоимость требует дат" for name in facts.candidates)
+        parts.extend(f"— {entry}" for entry in facts.candidates)
+        # UC-04: норма климата не равна прогнозу; визы без официального источника не утверждаются.
+        parts.append(
+            "Климатические нормы не загружены, прогноз погоды не выполнялся; визовые требования не проверены."
+        )
     elif facts.destination is not None:
         route = f"{facts.origin} - {facts.destination}" if facts.origin else facts.destination
         parts.append(f"Поездка: {route}.")
@@ -161,6 +165,11 @@ def safe_answer(facts: ComposerFacts) -> tuple[str, bool]:
 
 def amount_text(amount: Decimal | None) -> str | None:
     return None if amount is None else format(amount, "f")
+
+
+def money_text(amount: Decimal | None, currency: str | None) -> str:
+    """Сумма в формате ответа (те же правила, что у итога плана)."""
+    return _money(amount_text(amount), currency)
 
 
 def facts_from_values(**values: Any) -> ComposerFacts:
