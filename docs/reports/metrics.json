@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0.0",
+  "data_mode": "mock",
+  "thresholds": "не установлены: согласуются после первых измерений (METRIC-01, OPEN-05)",
+  "not_measured": {
+    "live": "BLOCKED: Live запрещён до DEC-04, DEC-09, DEC-11",
+    "replay": "BLOCKED: Replay-снимков нет (DEC-24)",
+    "mixed": "BLOCKED: требует Live"
+  },
+  "metrics": {
+    "e2e_completion_rate": {
+      "value": 1.0,
+      "method": "демо-чек получен / сценарии полного пути",
+      "n": 3
+    },
+    "clarification_rounds_avg": {
+      "value": 0.7,
+      "method": "раунды уточнения до плана",
+      "n": 3
+    },
+    "clarification_questions_avg": {
+      "value": 0.7,
+      "method": "вопросы за сценарий",
+      "n": 3
+    },
+    "time_to_first_useful_recommendation_ms": {
+      "value": 454.6,
+      "method": "от первого сообщения до плана, локально, Mock",
+      "n": 3
+    },
+    "full_scenario_latency_ms": {
+      "value": 902.7,
+      "method": "от сессии до демо-чека, локально, Mock",
+      "n": 3
+    },
+    "connection_violations": {
+      "value": 0,
+      "method": "violated-стыки в построенных планах",
+      "n": 3
+    },
+    "replan_correct_share": {
+      "value": 1.0,
+      "method": "пересборка с планом и сохранёнными условиями / все пересборки",
+      "n": 4
+    },
+    "facts_with_source_share": {
+      "value": 1.0,
+      "method": "компоненты плана с оффером и режимом данных / все компоненты",
+      "n": 15
+    },
+    "tool_error_share": {
+      "value": 0.0,
+      "method": "ошибочные результаты инструментов / все вызовы",
+      "n": 30
+    },
+    "api_calls": {
+      "value": 30,
+      "method": "вызовы инструментов через Registry"
+    },
+    "llm_calls": {
+      "value": 0,
+      "method": "LLM off (DEC-07)"
+    },
+    "llm_cost": {
+      "value": 0,
+      "method": "LLM off (DEC-07)"
+    },
+    "fallback_frequency": {
+      "value": 0,
+      "method": "Live→Replay и FALLBACK-активации; в Mock без LLM не возникают"
+    },
+    "data_mode_distribution": {
+      "value": {
+        "mock": 15
+      },
+      "method": "компоненты планов по режимам"
+    }
+  },
+  "version": "39a0869-dirty",
+  "measured_at": "2026-10-24T19:05:27+00:00"
+}
