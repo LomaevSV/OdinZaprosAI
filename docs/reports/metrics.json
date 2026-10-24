@@ -24,12 +24,12 @@
       "n": 3
     },
     "time_to_first_useful_recommendation_ms": {
-      "value": 454.6,
+      "value": 474.1,
       "method": "от первого сообщения до плана, локально, Mock",
       "n": 3
     },
     "full_scenario_latency_ms": {
-      "value": 902.7,
+      "value": 978.5,
       "method": "от сессии до демо-чека, локально, Mock",
       "n": 3
     },
@@ -76,6 +76,6 @@
       "method": "компоненты планов по режимам"
     }
   },
-  "version": "39a0869-dirty",
-  "measured_at": "2026-10-24T19:05:27+00:00"
+  "version": "5bfc0a1",
+  "measured_at": "2026-10-24T19:16:51+00:00"
 }
