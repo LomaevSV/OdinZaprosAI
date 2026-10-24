@@ -39,6 +39,7 @@ from odin.core.constraints import (
 )
 from odin.core.money import sum_prices, total_price
 from odin.core.replan import invalidated_roles
+from odin.core.tree import coverage, tradeoffs
 from odin.core.trip import (
     arrival_checkin_check,
     checkout_departure_check,
@@ -522,6 +523,19 @@ class Orchestrator:
         if request.return_trip and "return" not in selected:
             unknowns.append("компонент «return» не найден")
 
+        # COVERAGE-01: у каждого применимого условия есть оценка; потерянные условия видимы пользователю.
+        report = coverage(request.constraints, evaluations)
+        unknowns.extend(f"условие {cid} не оценено" for cid in report.missing)
+        unknowns.extend(f"обязательное условие {cid} не подтверждено" for cid in report.unknown_required)
+        constraint_ids = [c.constraint_id for c in request.constraints]
+        tradeoff_rows = [
+            row.text()
+            for row in tradeoffs(
+                {cid: evals for cid, _, evals in candidates.get("hotel", [])}, constraint_ids
+            )
+            if row.better or row.worse or row.unknown
+        ]
+
         modes = {component.component_id: component.data_mode for component in components}
         mode_set = set(modes.values())
         trip_mode = next(iter(mode_set)) if len(mode_set) == 1 else "mixed"
@@ -534,7 +548,7 @@ class Orchestrator:
             completeness=total.total_completeness,
             connection_checks=checks,
             constraint_evaluations=evaluations,
-            tradeoffs=[],
+            tradeoffs=tradeoff_rows,
             unknowns=sorted(set(unknowns)),
             sources=[plan_source],
             rank_class=max(rank_classes) if rank_classes else 2,  # type: ignore[arg-type]

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -122,6 +122,12 @@ def offer_staleness(
 # --------------------------------------------------------------------- стыки
 
 
+def _elapsed_minutes(start: datetime, end: datetime) -> int:
+    """Реально прошедшие минуты. Вычитание в одной зоне ZoneInfo в Python идёт по «настенному» времени
+    и игнорирует переход на летнее время, поэтому разность считается в UTC."""
+    return int((end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() // 60)
+
+
 def _check(
     status: EvaluationStatus,
     *,
@@ -211,7 +217,7 @@ def arrival_checkin_check(
     zone = ZoneInfo(timezone_name)
     local_arrival = arrival_at.astimezone(zone)
     check_in_start = datetime.combine(check_in_date, check_in_from, tzinfo=zone)
-    margin = int((check_in_start - local_arrival).total_seconds() // 60)
+    margin = _elapsed_minutes(local_arrival, check_in_start)
     times["arrival_local"] = local_arrival.isoformat()
 
     if local_arrival.date() != check_in_date:
@@ -239,7 +245,9 @@ def arrival_checkin_check(
             unknown_reason="data_missing",
             **common,
         )
-    ready = local_arrival + timedelta(minutes=buffer_minutes + transfer_minutes)
+    ready = (local_arrival.astimezone(UTC) + timedelta(minutes=buffer_minutes + transfer_minutes)).astimezone(
+        zone
+    )
     if ready.date() != check_in_date:
         return _check(
             "violated",
@@ -300,7 +308,7 @@ def checkout_departure_check(
     margin = None
     if check_out_until is not None:
         checkout = datetime.combine(check_out_date, check_out_until, tzinfo=ZoneInfo(timezone_name))
-        margin = int((local_departure - checkout).total_seconds() // 60)
+        margin = _elapsed_minutes(checkout, local_departure)
     return _check(
         "unknown",
         basis="отправление в день выезда; буфер до отправления не утверждён (DEC-20)",
