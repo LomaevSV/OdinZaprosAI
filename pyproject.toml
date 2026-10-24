@@ -1,0 +1,59 @@
+[project]
+name = "odin-zapros"
+version = "0.1.0"
+description = "О!дин запрос — прототип AI-турагента (трек «О!дин запрос»). Срез S1: сквозной путь на маркированных Mock-данных."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8,<3",
+    "httpx>=0.27",
+    "tzdata>=2024.1",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/odin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "error",
+    # Сторонняя рекомендация Starlette перейти на httpx2: не входит в утверждённый стек DEC-03.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
+markers = [
+    "unit: модульные тесты без сети",
+    "contract: контрактные тесты схем",
+    "negative: негативные тесты",
+    "adapter: адаптеры на синтетических фикстурах",
+    "live: интеграционные Live-тесты (только явный запуск)",
+    "e2e_mock: сквозные тесты на Mock",
+    "e2e_replay: сквозные тесты на Replay",
+    "e2e_live: сквозные тесты на Live",
+    "delivery: проверки поставки",
+    "req(*ids): идентификаторы требований ТЗ и тестов плана",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

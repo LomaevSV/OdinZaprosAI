@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:ConstraintGroup",
+  "$defs": {
+    "FallbackActivation": {
+      "additionalProperties": false,
+      "description": "Активация резервной группы (INTERPRET-01, FALLBACK-01). Статусы — DEC-30.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "group_id": {
+          "title": "Group Id",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "search_completeness": {
+          "enum": [
+            "complete",
+            "incomplete",
+            "unknown"
+          ],
+          "title": "Search Completeness",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "activated",
+            "not_activated",
+            "undetermined"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "group_id",
+        "trigger",
+        "search_completeness",
+        "status"
+      ],
+      "title": "FallbackActivation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Группа условий: AND, OR, FALLBACK не взаимозаменяемы; unparsed не теряется (INTERPRET-01).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "group_id": {
+      "title": "Group Id",
+      "type": "string"
+    },
+    "operator": {
+      "enum": [
+        "AND",
+        "OR",
+        "FALLBACK",
+        "unparsed"
+      ],
+      "title": "Operator",
+      "type": "string"
+    },
+    "children": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Children",
+      "type": "array"
+    },
+    "scope": {
+      "enum": [
+        "trip",
+        "hotel",
+        "transport",
+        "transfer"
+      ],
+      "title": "Scope",
+      "type": "string"
+    },
+    "activation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FallbackActivation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raw_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Raw Text"
+    }
+  },
+  "required": [
+    "group_id",
+    "operator",
+    "children",
+    "scope",
+    "activation",
+    "raw_text"
+  ],
+  "title": "ConstraintGroup",
+  "type": "object"
+}

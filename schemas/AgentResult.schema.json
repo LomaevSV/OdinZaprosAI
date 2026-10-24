@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:AgentResult",
+  "$defs": {
+    "ToolRequest": {
+      "additionalProperties": false,
+      "description": "Запрос логического инструмента. Выполняет только оркестратор через Tool Registry (ARCH-01).",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "call_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "enum": [
+            "search_transport",
+            "search_hotels",
+            "get_offer_details",
+            "get_transfer_options",
+            "geocode",
+            "get_climate",
+            "get_weather",
+            "get_reviews",
+            "suggest_destinations"
+          ],
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "deadline": {
+          "format": "date-time",
+          "title": "Deadline",
+          "type": "string"
+        },
+        "policy_scope": {
+          "const": "read_only",
+          "title": "Policy Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "call_id",
+        "tool_name",
+        "arguments",
+        "deadline",
+        "policy_scope"
+      ],
+      "title": "ToolRequest",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Результат LLM-роли или доменного модуля (конверт доменов — DEC-30).\n\n``requested_tools`` — только просьба; решение принимает политика оркестратора.",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "partial",
+        "unavailable",
+        "error"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "structured_output": {
+      "title": "Structured Output"
+    },
+    "requested_tools": {
+      "items": {
+        "$ref": "#/$defs/ToolRequest"
+      },
+      "title": "Requested Tools",
+      "type": "array"
+    },
+    "evidence_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "uncertainties": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Uncertainties",
+      "type": "array"
+    }
+  },
+  "required": [
+    "agent",
+    "status",
+    "structured_output"
+  ],
+  "title": "AgentResult",
+  "type": "object"
+}

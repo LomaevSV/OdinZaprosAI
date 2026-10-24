@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:ReviewEvidence",
+  "$defs": {
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "Происхождение существенного факта (DATA-MODE-02, CONTRACT-01).\n\n``verification_status=verified`` означает подтверждение конкретным источником, а не объективную истину.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "mcp",
+            "rest_api",
+            "local_dataset",
+            "mock_generator",
+            "editorial",
+            "user_input",
+            "computed",
+            "llm"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tool"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://[^\\s]{1,2000}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Url"
+        },
+        "retrieved_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retrieved At"
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generated At"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "external_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "External Id"
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "unverified",
+            "conflicting",
+            "stale"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        },
+        "data_mode": {
+          "enum": [
+            "live",
+            "replay",
+            "mock"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "request_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Parameters"
+        }
+      },
+      "required": [
+        "source_type",
+        "provider",
+        "tool",
+        "url",
+        "retrieved_at",
+        "generated_at",
+        "published_at",
+        "external_id",
+        "verification_status",
+        "data_mode"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Свидетельства отзывов (REVIEW-01, P1): рейтинг, объём и цитаты различаются.",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "hotel_id": {
+      "title": "Hotel Id",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceReference"
+    },
+    "review_rating": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Review Rating"
+    },
+    "rating_scale": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rating Scale"
+    },
+    "review_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Review Count"
+    },
+    "review_text_evidence": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Review Text Evidence",
+      "type": "array"
+    },
+    "review_aspects": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Review Aspects",
+      "type": "array"
+    },
+    "observed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Observed At"
+    },
+    "review_summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Review Summary"
+    }
+  },
+  "required": [
+    "hotel_id",
+    "source",
+    "review_rating",
+    "rating_scale",
+    "review_count",
+    "observed_at",
+    "review_summary"
+  ],
+  "title": "ReviewEvidence",
+  "type": "object"
+}

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:ConstraintEvaluation",
+  "$defs": {
+    "Deviation": {
+      "additionalProperties": false,
+      "description": "Величина отклонения при нарушении числового условия (CONSTRAINT-01).",
+      "properties": {
+        "amount": {
+          "description": "Decimal строкой",
+          "pattern": "^-?\\d+(\\.\\d{1,2})?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Unit",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "unit",
+        "description"
+      ],
+      "title": "Deviation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Оценка условия для кандидата: unknown не равно matched (CONSTRAINT-01).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "constraint_id": {
+      "title": "Constraint Id",
+      "type": "string"
+    },
+    "component_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Component Id"
+    },
+    "plan_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Plan Id"
+    },
+    "status": {
+      "enum": [
+        "matched",
+        "violated",
+        "unknown",
+        "not_applicable"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "unknown_reason": {
+      "anyOf": [
+        {
+          "enum": [
+            "not_provided_by_source",
+            "source_error",
+            "timeout",
+            "budget_exhausted",
+            "not_requested",
+            "estimate_only",
+            "not_supported_field",
+            "mock_data",
+            "currency_unresolved",
+            "price_incomplete",
+            "buffer_not_approved",
+            "decision_pending",
+            "data_missing",
+            "stale"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Unknown Reason"
+    },
+    "evidence_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "deviation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Deviation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "constraint_id",
+    "component_id",
+    "plan_id",
+    "status",
+    "unknown_reason",
+    "reason",
+    "deviation"
+  ],
+  "title": "ConstraintEvaluation",
+  "type": "object"
+}

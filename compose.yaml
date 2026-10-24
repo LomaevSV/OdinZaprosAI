@@ -1,0 +1,21 @@
+# «О!дин запрос» — один сервис, том для SQLite, переменные из .env (план §2.16).
+services:
+  odin:
+    build: .
+    image: odin-zapros:s1
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ODIN_DATA_MODE: ${ODIN_DATA_MODE:-mock}
+      ODIN_LLM_MODE: ${ODIN_LLM_MODE:-off}
+      ODIN_PORT: ${ODIN_PORT:-8080}
+      ODIN_DB_PATH: /data/odin.sqlite3
+    ports:
+      - "${ODIN_PORT:-8080}:${ODIN_PORT:-8080}"
+    volumes:
+      - odin-data:/data
+    restart: unless-stopped
+
+volumes:
+  odin-data:

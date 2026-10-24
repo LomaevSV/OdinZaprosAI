@@ -1,0 +1,4736 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "О!дин запрос API",
+    "description": "JSON API прототипа AI-турагента. Срез S1: только Mock-данные с маркировкой «ДЕМО». Демонстрационная покупка: реального бронирования и списания средств нет.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schemas/{name}": {
+      "get": {
+        "tags": [
+          "contracts"
+        ],
+        "summary": "Get Schema",
+        "operationId": "get_schema_api_v1_schemas__name__get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Schema Api V1 Schemas  Name  Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Create Session",
+        "operationId": "create_session_api_v1_sessions_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Get Session",
+        "operationId": "get_session_api_v1_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/messages": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Post Message",
+        "operationId": "post_message_api_v1_sessions__session_id__messages_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session Events",
+        "operationId": "session_events_api_v1_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "After"
+            }
+          },
+          {
+            "name": "follow",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Follow"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE-поток событий сессии",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trips/{trip_id}": {
+      "get": {
+        "tags": [
+          "trips"
+        ],
+        "summary": "Get Trip",
+        "operationId": "get_trip_api_v1_trips__trip_id__get",
+        "parameters": [
+          {
+            "name": "trip_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trip Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trips/{trip_id}/selections": {
+      "post": {
+        "tags": [
+          "trips"
+        ],
+        "summary": "Post Selection",
+        "operationId": "post_selection_api_v1_trips__trip_id__selections_post",
+        "parameters": [
+          {
+            "name": "trip_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trip Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимая операция",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trips/{trip_id}/replan": {
+      "post": {
+        "tags": [
+          "trips"
+        ],
+        "summary": "Post Replan",
+        "operationId": "post_replan_api_v1_trips__trip_id__replan_post",
+        "parameters": [
+          {
+            "name": "trip_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trip Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимая операция",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trips/{trip_id}/cart": {
+      "post": {
+        "tags": [
+          "cart"
+        ],
+        "summary": "Post Cart",
+        "operationId": "post_cart_api_v1_trips__trip_id__cart_post",
+        "parameters": [
+          {
+            "name": "trip_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trip Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимая операция",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "cart"
+        ],
+        "summary": "Get Cart",
+        "operationId": "get_cart_api_v1_trips__trip_id__cart_get",
+        "parameters": [
+          {
+            "name": "trip_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trip Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/carts/{cart_id}/confirm": {
+      "post": {
+        "tags": [
+          "cart"
+        ],
+        "summary": "Post Confirm",
+        "operationId": "post_confirm_api_v1_carts__cart_id__confirm_post",
+        "parameters": [
+          {
+            "name": "cart_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Cart Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимая операция",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/carts/{cart_id}/decline": {
+      "post": {
+        "tags": [
+          "cart"
+        ],
+        "summary": "Post Decline",
+        "operationId": "post_decline_api_v1_carts__cart_id__decline_post",
+        "parameters": [
+          {
+            "name": "cart_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Cart Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclineRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Недопустимая операция",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Устаревшая ревизия поездки",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/receipts/{receipt_id}": {
+      "get": {
+        "tags": [
+          "cart"
+        ],
+        "summary": "Get Receipt",
+        "operationId": "get_receipt_api_v1_receipts__receipt_id__get",
+        "parameters": [
+          {
+            "name": "receipt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Receipt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoReceipt"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Ambiguity": {
+        "properties": {
+          "ambiguity_id": {
+            "type": "string",
+            "title": "Ambiguity Id"
+          },
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "blocking_class": {
+            "type": "string",
+            "enum": [
+              "blocking_now",
+              "assumable_only_if_authorized",
+              "optional"
+            ],
+            "title": "Blocking Class"
+          },
+          "source_span": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Span"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ambiguity_id",
+          "field",
+          "question",
+          "blocking_class",
+          "source_span"
+        ],
+        "title": "Ambiguity"
+      },
+      "Assumption": {
+        "properties": {
+          "assumption_id": {
+            "type": "string",
+            "title": "Assumption Id"
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "party",
+              "nights"
+            ],
+            "title": "Field"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "shown_with_price": {
+            "type": "boolean",
+            "title": "Shown With Price"
+          },
+          "authorized_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorized By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "assumption_id",
+          "field",
+          "value",
+          "reason",
+          "shown_with_price",
+          "authorized_by"
+        ],
+        "title": "Assumption",
+        "description": "Только показанные предварительные допущения о составе группы или числе ночей (UC-03)."
+      },
+      "Availability": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "subject": {
+            "type": "string",
+            "enum": [
+              "hotel",
+              "transport",
+              "transfer"
+            ],
+            "title": "Subject"
+          },
+          "availability_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Availability Status"
+          },
+          "evidence_level": {
+            "type": "string",
+            "enum": [
+              "search_listing",
+              "offer_details",
+              "provider_checked",
+              "historical",
+              "mock",
+              "none"
+            ],
+            "title": "Evidence Level"
+          },
+          "verification_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified",
+              "conflicting",
+              "stale"
+            ],
+            "title": "Verification Status"
+          },
+          "data_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "replay",
+              "mock"
+            ],
+            "title": "Data Mode"
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters"
+          },
+          "unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_provided_by_source",
+                  "source_error",
+                  "timeout",
+                  "budget_exhausted",
+                  "not_requested",
+                  "estimate_only",
+                  "not_supported_field",
+                  "mock_data",
+                  "currency_unresolved",
+                  "price_incomplete",
+                  "buffer_not_approved",
+                  "decision_pending",
+                  "data_missing",
+                  "stale"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Reason"
+          },
+          "seats_left": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seats Left"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "subject",
+          "availability_status",
+          "evidence_level",
+          "verification_status",
+          "data_mode",
+          "checked_at",
+          "unknown_reason"
+        ],
+        "title": "Availability",
+        "description": "Наличие: независимые оси availability_status, verification_status, data_mode (DATA-MODE-02).\n\n``available`` — подтверждение источника на конкретные даты/состав/тариф в пределах его семантики,\nне гарантия покупки. Поисковая выдача и Mock не доказывают наличие (план §2.19)."
+      },
+      "Budget": {
+        "properties": {
+          "amount": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d{1,2})?$",
+            "title": "Amount",
+            "description": "Decimal строкой"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "description": "Код ISO 4217"
+          },
+          "scope": {
+            "type": "string",
+            "const": "trip_total",
+            "title": "Scope"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "amount",
+          "currency",
+          "scope"
+        ],
+        "title": "Budget"
+      },
+      "CandidateDestination": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "candidate_id": {
+            "type": "string",
+            "title": "Candidate Id"
+          },
+          "place": {
+            "$ref": "#/components/schemas/Place"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "matched_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Tags"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "climate_status": {
+            "type": "string",
+            "enum": [
+              "not_loaded",
+              "norm",
+              "unknown"
+            ],
+            "title": "Climate Status"
+          },
+          "climate_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Climate Note"
+          },
+          "estimated_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Price"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_note": {
+            "type": "string",
+            "title": "Cost Note"
+          },
+          "visa_status": {
+            "type": "string",
+            "const": "not_verified",
+            "title": "Visa Status"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "place",
+          "tags",
+          "matched_tags",
+          "description",
+          "climate_status",
+          "climate_note",
+          "estimated_cost",
+          "cost_note",
+          "visa_status",
+          "source"
+        ],
+        "title": "CandidateDestination",
+        "description": "Кандидат направления для вдохновения (UC-04). Визы никогда не объявляются проверенными."
+      },
+      "Cart": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "cart_id": {
+            "type": "string",
+            "title": "Cart Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total_price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "unknown"
+            ],
+            "title": "Completeness"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "awaiting_confirmation",
+              "demo_purchased"
+            ],
+            "title": "Status"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "demo_receipt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Receipt Id"
+          },
+          "risk_acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Acknowledged At"
+          },
+          "confirmation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation Id"
+          },
+          "significant_unknowns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Significant Unknowns"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "declined_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declined At"
+          },
+          "demo_notice": {
+            "type": "string",
+            "const": "Демонстрационная покупка. Реального бронирования и списания средств нет",
+            "title": "Demo Notice",
+            "default": "Демонстрационная покупка. Реального бронирования и списания средств нет"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cart_id",
+          "trip_id",
+          "trip_revision",
+          "items",
+          "total_price",
+          "completeness",
+          "status",
+          "confirmed_at",
+          "demo_receipt_id",
+          "risk_acknowledged_at",
+          "confirmation_id",
+          "created_at"
+        ],
+        "title": "Cart",
+        "description": "Корзина (UC-07, UC-08). Согласие на покупку и на риски фиксируются раздельно."
+      },
+      "CartItem": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "component_id": {
+            "type": "string",
+            "title": "Component Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "return",
+              "hotel",
+              "transfer_in",
+              "transfer_out"
+            ],
+            "title": "Role"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "data_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "replay",
+              "mock"
+            ],
+            "title": "Data Mode"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "availability_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Availability Status"
+          },
+          "informational": {
+            "type": "boolean",
+            "title": "Informational"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "item_id",
+          "component_id",
+          "role",
+          "kind",
+          "title",
+          "data_mode",
+          "price",
+          "availability_status",
+          "informational",
+          "note",
+          "source"
+        ],
+        "title": "CartItem"
+      },
+      "CartRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision"
+        ],
+        "title": "CartRequest"
+      },
+      "CartResponse": {
+        "properties": {
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "title": "Trip Revision"
+          },
+          "cart": {
+            "$ref": "#/components/schemas/Cart"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trip_id",
+          "trip_revision",
+          "cart"
+        ],
+        "title": "CartResponse"
+      },
+      "ConfirmRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "confirmation_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Confirmation Id"
+          },
+          "purchase_consent": {
+            "type": "boolean",
+            "title": "Purchase Consent"
+          },
+          "risk_acknowledgement": {
+            "type": "boolean",
+            "title": "Risk Acknowledgement"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision",
+          "confirmation_id",
+          "purchase_consent",
+          "risk_acknowledgement"
+        ],
+        "title": "ConfirmRequest",
+        "description": "Два раздельных однозначных пункта согласия (UC-08)."
+      },
+      "ConfirmResponse": {
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/DemoReceipt"
+          },
+          "cart": {
+            "$ref": "#/components/schemas/Cart"
+          },
+          "idempotent_replay": {
+            "type": "boolean",
+            "title": "Idempotent Replay"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "receipt",
+          "cart",
+          "idempotent_replay"
+        ],
+        "title": "ConfirmResponse"
+      },
+      "ConnectionCheck": {
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "title": "Check Id"
+          },
+          "from_component": {
+            "type": "string",
+            "title": "From Component"
+          },
+          "to_component": {
+            "type": "string",
+            "title": "To Component"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "violated",
+              "unknown",
+              "not_applicable"
+            ],
+            "title": "Status"
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis"
+          },
+          "times_used": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Times Used"
+          },
+          "timezones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Timezones"
+          },
+          "buffer_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Minutes"
+          },
+          "buffer_status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "proposed_not_approved",
+              "none"
+            ],
+            "title": "Buffer Status"
+          },
+          "margin_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Minutes"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_provided_by_source",
+                  "source_error",
+                  "timeout",
+                  "budget_exhausted",
+                  "not_requested",
+                  "estimate_only",
+                  "not_supported_field",
+                  "mock_data",
+                  "currency_unresolved",
+                  "price_incomplete",
+                  "buffer_not_approved",
+                  "decision_pending",
+                  "data_missing",
+                  "stale"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "check_id",
+          "from_component",
+          "to_component",
+          "status",
+          "basis",
+          "times_used",
+          "timezones",
+          "buffer_minutes",
+          "buffer_status",
+          "margin_minutes",
+          "unknown_reason"
+        ],
+        "title": "ConnectionCheck",
+        "description": "Проверка стыка (CONNECTION-02): статус, основание, времена и пояса, буфер, источник."
+      },
+      "Constraint": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "constraint_id": {
+            "type": "string",
+            "title": "Constraint Id"
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "budget_total",
+              "transport_mode",
+              "pets",
+              "hotel_breakfast",
+              "hotel_stars_min",
+              "hotel_free_cancellation"
+            ],
+            "title": "Field"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "eq",
+              "ne",
+              "lte",
+              "gte",
+              "in",
+              "not_in"
+            ],
+            "title": "Operator"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "requiredness": {
+            "type": "string",
+            "enum": [
+              "required",
+              "preferred"
+            ],
+            "title": "Requiredness"
+          },
+          "source_span": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Span"
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "text_span",
+              "form_field"
+            ],
+            "title": "Source Kind"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "trip",
+              "hotel",
+              "transport",
+              "transfer"
+            ],
+            "title": "Scope"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "ambiguity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ambiguity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "constraint_id",
+          "field",
+          "operator",
+          "value",
+          "requiredness",
+          "source_span",
+          "source_kind",
+          "scope",
+          "confidence",
+          "ambiguity"
+        ],
+        "title": "Constraint",
+        "description": "Пользовательское условие с доказуемой связью с фрагментом сообщения (UC-01, INTERPRET-01)."
+      },
+      "ConstraintEvaluation": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "constraint_id": {
+            "type": "string",
+            "title": "Constraint Id"
+          },
+          "component_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component Id"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "violated",
+              "unknown",
+              "not_applicable"
+            ],
+            "title": "Status"
+          },
+          "unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_provided_by_source",
+                  "source_error",
+                  "timeout",
+                  "budget_exhausted",
+                  "not_requested",
+                  "estimate_only",
+                  "not_supported_field",
+                  "mock_data",
+                  "currency_unresolved",
+                  "price_incomplete",
+                  "buffer_not_approved",
+                  "decision_pending",
+                  "data_missing",
+                  "stale"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Reason"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Refs"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "deviation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Deviation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "constraint_id",
+          "component_id",
+          "plan_id",
+          "status",
+          "unknown_reason",
+          "reason",
+          "deviation"
+        ],
+        "title": "ConstraintEvaluation",
+        "description": "Оценка условия для кандидата: unknown не равно matched (CONSTRAINT-01)."
+      },
+      "ConstraintGroup": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "AND",
+              "OR",
+              "FALLBACK",
+              "unparsed"
+            ],
+            "title": "Operator"
+          },
+          "children": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Children"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "trip",
+              "hotel",
+              "transport",
+              "transfer"
+            ],
+            "title": "Scope"
+          },
+          "activation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FallbackActivation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "raw_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "group_id",
+          "operator",
+          "children",
+          "scope",
+          "activation",
+          "raw_text"
+        ],
+        "title": "ConstraintGroup",
+        "description": "Группа условий: AND, OR, FALLBACK не взаимозаменяемы; unparsed не теряется (INTERPRET-01)."
+      },
+      "DateExpression": {
+        "properties": {
+          "raw_text": {
+            "type": "string",
+            "title": "Raw Text"
+          },
+          "reference_datetime": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reference Datetime"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "rule": {
+            "type": "string",
+            "title": "Rule"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "ambiguous",
+              "unresolved"
+            ],
+            "title": "Status"
+          },
+          "resolved_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Start"
+          },
+          "resolved_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved End"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "raw_text",
+          "reference_datetime",
+          "timezone",
+          "rule",
+          "status",
+          "resolved_start",
+          "resolved_end"
+        ],
+        "title": "DateExpression",
+        "description": "Выражение даты (INTERPRET-02): разрешается детерминированным календарём."
+      },
+      "DateRange": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "timezone"
+        ],
+        "title": "DateRange"
+      },
+      "DeclineRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision"
+        ],
+        "title": "DeclineRequest"
+      },
+      "DemoReceipt": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "receipt_id": {
+            "type": "string",
+            "title": "Receipt Id"
+          },
+          "cart_id": {
+            "type": "string",
+            "title": "Cart Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "title": "Trip Revision"
+          },
+          "confirmation_id": {
+            "type": "string",
+            "title": "Confirmation Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "notice": {
+            "type": "string",
+            "const": "Демонстрационная покупка. Реального бронирования и списания средств нет",
+            "title": "Notice",
+            "default": "Демонстрационная покупка. Реального бронирования и списания средств нет"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CartItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total_price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "unknown"
+            ],
+            "title": "Completeness"
+          },
+          "purchase_consent_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Purchase Consent At"
+          },
+          "risk_acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Acknowledged At"
+          },
+          "significant_unknowns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Significant Unknowns"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "receipt_id",
+          "cart_id",
+          "trip_id",
+          "trip_revision",
+          "confirmation_id",
+          "created_at",
+          "items",
+          "total_price",
+          "completeness",
+          "purchase_consent_at",
+          "risk_acknowledged_at",
+          "significant_unknowns"
+        ],
+        "title": "DemoReceipt"
+      },
+      "Deviation": {
+        "properties": {
+          "amount": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,2})?$",
+            "title": "Amount",
+            "description": "Decimal строкой"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "amount",
+          "unit",
+          "description"
+        ],
+        "title": "Deviation",
+        "description": "Величина отклонения при нарушении числового условия (CONSTRAINT-01)."
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "error_code",
+          "message"
+        ],
+        "title": "ErrorResponse"
+      },
+      "FallbackActivation": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "trigger": {
+            "type": "string",
+            "title": "Trigger"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "search_completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "incomplete",
+              "unknown"
+            ],
+            "title": "Search Completeness"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "activated",
+              "not_activated",
+              "undetermined"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "group_id",
+          "trigger",
+          "search_completeness",
+          "status"
+        ],
+        "title": "FallbackActivation",
+        "description": "Активация резервной группы (INTERPRET-01, FALLBACK-01). Статусы — DEC-30."
+      },
+      "Fee": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,2})?$",
+                "description": "Decimal строкой"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$",
+                "description": "Код ISO 4217"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "included": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "amount",
+          "currency",
+          "included"
+        ],
+        "title": "Fee"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "schema_version": {
+            "type": "string",
+            "title": "Schema Version"
+          },
+          "data_mode": {
+            "type": "string",
+            "title": "Data Mode"
+          },
+          "llm_mode": {
+            "type": "string",
+            "title": "Llm Mode"
+          },
+          "database": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error"
+            ],
+            "title": "Database"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHealth"
+            },
+            "type": "array",
+            "title": "Providers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "schema_version",
+          "data_mode",
+          "llm_mode",
+          "database",
+          "providers"
+        ],
+        "title": "HealthResponse"
+      },
+      "HistoryEntry": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "revision",
+          "request_id",
+          "event",
+          "at"
+        ],
+        "title": "HistoryEntry"
+      },
+      "Hotel": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "hotel_id": {
+            "type": "string",
+            "title": "Hotel Id"
+          },
+          "source_hotel_id": {
+            "type": "string",
+            "title": "Source Hotel Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "location": {
+            "$ref": "#/components/schemas/HotelLocation"
+          },
+          "geo": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geo"
+          },
+          "amenities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Amenities"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Rating"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviews_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviews Summary"
+          },
+          "official_website": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https?://[^\\s]{1,2000}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Official Website"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\+?[0-9 ()\\-]{5,25}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "star_rating": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Star Rating"
+          },
+          "pets_allowed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pets Allowed"
+          },
+          "check_in_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check In From"
+          },
+          "check_out_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Out Until"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "hotel_id",
+          "source_hotel_id",
+          "name",
+          "location",
+          "geo",
+          "rating",
+          "reviews_summary",
+          "official_website",
+          "phone",
+          "star_rating",
+          "pets_allowed",
+          "check_in_from",
+          "check_out_until",
+          "source"
+        ],
+        "title": "Hotel"
+      },
+      "HotelLocation": {
+        "properties": {
+          "city": {
+            "type": "string",
+            "title": "City"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "city",
+          "address",
+          "timezone"
+        ],
+        "title": "HotelLocation"
+      },
+      "HotelOffer": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "offer_id": {
+            "type": "string",
+            "title": "Offer Id"
+          },
+          "hotel_id": {
+            "type": "string",
+            "title": "Hotel Id"
+          },
+          "check_in": {
+            "type": "string",
+            "format": "date",
+            "title": "Check In"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date",
+            "title": "Check Out"
+          },
+          "occupancy": {
+            "$ref": "#/components/schemas/Occupancy"
+          },
+          "room_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Room Type"
+          },
+          "price_total": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$",
+                "description": "Код ISO 4217"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "price_scope": {
+            "type": "string",
+            "enum": [
+              "per_person",
+              "per_seat",
+              "party_total",
+              "per_night",
+              "stay_total",
+              "per_room_stay",
+              "trip_total",
+              "unknown"
+            ],
+            "title": "Price Scope"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/Availability"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          },
+          "terms": {
+            "$ref": "#/components/schemas/HotelTerms"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Limitations"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/Validity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "offer_id",
+          "hotel_id",
+          "check_in",
+          "check_out",
+          "occupancy",
+          "room_type",
+          "price_total",
+          "currency",
+          "price_scope",
+          "availability",
+          "source",
+          "terms",
+          "validity"
+        ],
+        "title": "HotelOffer"
+      },
+      "HotelTerms": {
+        "properties": {
+          "breakfast_included": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakfast Included"
+          },
+          "meals": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meals"
+          },
+          "free_cancellation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Cancellation"
+          },
+          "free_cancellation_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Cancellation Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "breakfast_included",
+          "meals",
+          "free_cancellation",
+          "free_cancellation_until"
+        ],
+        "title": "HotelTerms"
+      },
+      "MessageRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "form": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StructuredForm"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision"
+        ],
+        "title": "MessageRequest"
+      },
+      "Occupancy": {
+        "properties": {
+          "adults": {
+            "type": "integer",
+            "maximum": 9.0,
+            "minimum": 1.0,
+            "title": "Adults"
+          },
+          "children_ages": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Children Ages"
+          },
+          "rooms": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Rooms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "adults",
+          "rooms"
+        ],
+        "title": "Occupancy"
+      },
+      "Party": {
+        "properties": {
+          "adults": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adults"
+          },
+          "children_ages": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Children Ages"
+          },
+          "pets": {
+            "items": {
+              "$ref": "#/components/schemas/PetInfo"
+            },
+            "type": "array",
+            "title": "Pets"
+          },
+          "rooms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rooms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "adults"
+        ],
+        "title": "Party",
+        "description": "Состав группы. Неизвестное — null, а не выдуманное значение (UC-03)."
+      },
+      "PetInfo": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "dog",
+              "cat",
+              "other"
+            ],
+            "title": "Kind"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "count"
+        ],
+        "title": "PetInfo"
+      },
+      "Place": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "country_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country Code"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "lat": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 90.0,
+                "minimum": -90.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat"
+          },
+          "lon": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 180.0,
+                "minimum": -180.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lon"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "country_code",
+          "timezone",
+          "lat",
+          "lon",
+          "source"
+        ],
+        "title": "Place"
+      },
+      "PlanComponent": {
+        "properties": {
+          "component_id": {
+            "type": "string",
+            "title": "Component Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "return",
+              "hotel",
+              "transfer_in",
+              "transfer_out"
+            ],
+            "title": "Role"
+          },
+          "offer_id": {
+            "type": "string",
+            "title": "Offer Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "data_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "replay",
+              "mock"
+            ],
+            "title": "Data Mode"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "component_id",
+          "role",
+          "offer_id",
+          "kind",
+          "title",
+          "data_mode"
+        ],
+        "title": "PlanComponent"
+      },
+      "Price": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,2})?$",
+                "description": "Decimal строкой"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$",
+                "description": "Код ISO 4217"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "price_scope": {
+            "type": "string",
+            "enum": [
+              "per_person",
+              "per_seat",
+              "party_total",
+              "per_night",
+              "stay_total",
+              "per_room_stay",
+              "trip_total",
+              "unknown"
+            ],
+            "title": "Price Scope"
+          },
+          "guests": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 20.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guests"
+          },
+          "rooms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rooms"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PricePeriod"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inclusions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Inclusions"
+          },
+          "known_fees": {
+            "items": {
+              "$ref": "#/components/schemas/Fee"
+            },
+            "type": "array",
+            "title": "Known Fees"
+          },
+          "mandatory_fees_status": {
+            "type": "string",
+            "enum": [
+              "included",
+              "excluded_known",
+              "unknown",
+              "not_applicable"
+            ],
+            "title": "Mandatory Fees Status"
+          },
+          "total_completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "unknown"
+            ],
+            "title": "Total Completeness"
+          },
+          "unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "not_provided_by_source",
+                  "source_error",
+                  "timeout",
+                  "budget_exhausted",
+                  "not_requested",
+                  "estimate_only",
+                  "not_supported_field",
+                  "mock_data",
+                  "currency_unresolved",
+                  "price_incomplete",
+                  "buffer_not_approved",
+                  "decision_pending",
+                  "data_missing",
+                  "stale"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Reason"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "title": "As Of"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "amount",
+          "currency",
+          "price_scope",
+          "guests",
+          "rooms",
+          "period",
+          "mandatory_fees_status",
+          "total_completeness",
+          "unknown_reason",
+          "source",
+          "as_of"
+        ],
+        "title": "Price",
+        "description": "Нормативные поля PRICE-01. Полная цена — за всех путешественников и весь период."
+      },
+      "PricePeriod": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "PricePeriod"
+      },
+      "ProviderHealth": {
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "title": "Provider Id"
+          },
+          "approval_status": {
+            "type": "string",
+            "title": "Approval Status"
+          },
+          "live_enabled": {
+            "type": "boolean",
+            "title": "Live Enabled"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider_id",
+          "approval_status",
+          "live_enabled",
+          "reason"
+        ],
+        "title": "ProviderHealth"
+      },
+      "Rating": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "scale": {
+            "type": "string",
+            "title": "Scale"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value",
+          "scale",
+          "count"
+        ],
+        "title": "Rating"
+      },
+      "ReplanRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "change_set": {
+            "$ref": "#/components/schemas/StructuredForm"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision",
+          "change_set"
+        ],
+        "title": "ReplanRequest"
+      },
+      "SearchTermination": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "sufficient_results",
+              "sources_exhausted",
+              "limits_exhausted",
+              "deadline",
+              "provider_unavailable",
+              "user_stopped",
+              "blocked_by_decision"
+            ],
+            "title": "Reason"
+          },
+          "checked_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Checked Sources"
+          },
+          "unchecked_sources": {
+            "items": {
+              "$ref": "#/components/schemas/UncheckedSource"
+            },
+            "type": "array",
+            "title": "Unchecked Sources"
+          },
+          "candidates_seen": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Candidates Seen"
+          },
+          "confirmed_matches": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Confirmed Matches"
+          },
+          "unknown_candidates": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unknown Candidates"
+          },
+          "constraints_unresolved": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Constraints Unresolved"
+          },
+          "budget_used": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Budget Used"
+          },
+          "can_continue": {
+            "type": "boolean",
+            "title": "Can Continue"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason",
+          "checked_sources",
+          "unchecked_sources",
+          "candidates_seen",
+          "confirmed_matches",
+          "unknown_candidates",
+          "can_continue"
+        ],
+        "title": "SearchTermination",
+        "description": "Причина и охват остановки поиска (SEARCH-STOP-01, план §2.23).\n\n``sufficient_results`` выключен до решения DEC-22 и отклоняется валидатором.\nОстановка по лимиту или ошибке не доказывает отсутствия вариантов."
+      },
+      "SelectionRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Request Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "selections": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "outbound",
+                "return",
+                "hotel",
+                "transfer_in",
+                "transfer_out"
+              ]
+            },
+            "type": "object",
+            "title": "Selections"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "trip_revision",
+          "selections"
+        ],
+        "title": "SelectionRequest"
+      },
+      "SessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "title": "Trip Revision"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "llm_mode": {
+            "type": "string",
+            "title": "Llm Mode"
+          },
+          "data_mode": {
+            "type": "string",
+            "title": "Data Mode"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TripState"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "trip_id",
+          "trip_revision",
+          "created_at",
+          "llm_mode",
+          "data_mode",
+          "state"
+        ],
+        "title": "SessionResponse"
+      },
+      "SourceReference": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "mcp",
+              "rest_api",
+              "local_dataset",
+              "mock_generator",
+              "editorial",
+              "user_input",
+              "computed",
+              "llm"
+            ],
+            "title": "Source Type"
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Provider"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https?://[^\\s]{1,2000}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "retrieved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieved At"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "verification_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified",
+              "conflicting",
+              "stale"
+            ],
+            "title": "Verification Status"
+          },
+          "data_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "replay",
+              "mock"
+            ],
+            "title": "Data Mode"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Limitations"
+          },
+          "request_parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Parameters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_type",
+          "provider",
+          "tool",
+          "url",
+          "retrieved_at",
+          "generated_at",
+          "published_at",
+          "external_id",
+          "verification_status",
+          "data_mode"
+        ],
+        "title": "SourceReference",
+        "description": "Происхождение существенного факта (DATA-MODE-02, CONTRACT-01).\n\n``verification_status=verified`` означает подтверждение конкретным источником, а не объективную истину."
+      },
+      "StructuredForm": {
+        "properties": {
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination"
+          },
+          "date_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date From"
+          },
+          "date_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date To"
+          },
+          "adults": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adults"
+          },
+          "children_ages": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Children Ages"
+          },
+          "return_trip": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Trip"
+          },
+          "transport_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "rail",
+                "flight"
+              ]
+            },
+            "type": "array",
+            "title": "Transport Modes"
+          },
+          "transport_modes_required": {
+            "type": "boolean",
+            "title": "Transport Modes Required",
+            "default": false
+          },
+          "budget_amount": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,2})?$",
+                "description": "Decimal строкой"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Amount"
+          },
+          "budget_currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$",
+                "description": "Код ISO 4217"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Currency"
+          },
+          "budget_required": {
+            "type": "boolean",
+            "title": "Budget Required",
+            "default": false
+          },
+          "pets": {
+            "items": {
+              "$ref": "#/components/schemas/PetInfo"
+            },
+            "type": "array",
+            "maxItems": 3,
+            "title": "Pets"
+          },
+          "pets_required": {
+            "type": "boolean",
+            "title": "Pets Required",
+            "default": false
+          },
+          "breakfast": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakfast"
+          },
+          "breakfast_required": {
+            "type": "boolean",
+            "title": "Breakfast Required",
+            "default": false
+          },
+          "stars_min": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stars Min"
+          },
+          "stars_required": {
+            "type": "boolean",
+            "title": "Stars Required",
+            "default": false
+          },
+          "free_cancellation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Cancellation"
+          },
+          "free_cancellation_required": {
+            "type": "boolean",
+            "title": "Free Cancellation Required",
+            "default": false
+          },
+          "wishes_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Wishes Tags"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StructuredForm",
+        "description": "Структурированный ввод (режим без LLM, DEC-08 вариант «а»).\n\nФлаги ``*_required`` — явный выбор пользователя; по умолчанию условие ``preferred`` (CONSTRAINT-01)."
+      },
+      "TravelOffer": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "offer_id": {
+            "type": "string",
+            "title": "Offer Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flight",
+              "rail",
+              "hotel",
+              "transfer",
+              "other"
+            ],
+            "title": "Kind"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "return",
+              "transfer_in",
+              "transfer_out",
+              "other"
+            ],
+            "title": "Direction"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters"
+          },
+          "departure_place": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Place"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "arrival_place": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Place"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "departure_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Departure At"
+          },
+          "arrival_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arrival At"
+          },
+          "duration_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Minutes"
+          },
+          "duration_basis": {
+            "type": "string",
+            "enum": [
+              "schedule",
+              "estimate_osrm",
+              "estimate_mock",
+              "unknown"
+            ],
+            "title": "Duration Basis"
+          },
+          "carrier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carrier"
+          },
+          "pets_allowed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pets Allowed"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "terms": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Terms"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceReference"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/Availability"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/Validity"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Limitations"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "offer_id",
+          "kind",
+          "direction",
+          "title",
+          "parameters",
+          "departure_place",
+          "arrival_place",
+          "departure_at",
+          "arrival_at",
+          "duration_minutes",
+          "duration_basis",
+          "carrier",
+          "pets_allowed",
+          "price",
+          "source",
+          "availability",
+          "validity"
+        ],
+        "title": "TravelOffer",
+        "description": "Транспорт или трансфер. Гостиничная семантика доступности не применяется (CONTRACT-02)."
+      },
+      "TripPlan": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "plan_id": {
+            "type": "string",
+            "title": "Plan Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Trip Revision"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/PlanComponent"
+            },
+            "type": "array",
+            "title": "Components"
+          },
+          "total_price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "unknown"
+            ],
+            "title": "Completeness"
+          },
+          "connection_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionCheck"
+            },
+            "type": "array",
+            "title": "Connection Checks"
+          },
+          "constraint_evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/ConstraintEvaluation"
+            },
+            "type": "array",
+            "title": "Constraint Evaluations"
+          },
+          "tradeoffs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tradeoffs"
+          },
+          "unknowns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unknowns"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceReference"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "rank_class": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3
+            ],
+            "title": "Rank Class"
+          },
+          "trip_data_mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "replay",
+              "mock",
+              "mixed"
+            ],
+            "title": "Trip Data Mode"
+          },
+          "data_mode_breakdown": {
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "live",
+                "replay",
+                "mock"
+              ]
+            },
+            "type": "object",
+            "title": "Data Mode Breakdown"
+          },
+          "fully_agreed": {
+            "type": "boolean",
+            "title": "Fully Agreed"
+          },
+          "relevance_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relevance Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "plan_id",
+          "trip_revision",
+          "components",
+          "total_price",
+          "completeness",
+          "rank_class",
+          "trip_data_mode",
+          "fully_agreed",
+          "relevance_note"
+        ],
+        "title": "TripPlan"
+      },
+      "TripRequest": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "raw_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Text"
+          },
+          "input_mode": {
+            "type": "string",
+            "enum": [
+              "structured_form",
+              "free_text_llm",
+              "free_text_replay"
+            ],
+            "title": "Input Mode"
+          },
+          "reference_datetime": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reference Datetime"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Place"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Place"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "party": {
+            "$ref": "#/components/schemas/Party"
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Budget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "return_trip": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Trip"
+          },
+          "wishes_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Wishes Tags"
+          },
+          "constraints": {
+            "items": {
+              "$ref": "#/components/schemas/Constraint"
+            },
+            "type": "array",
+            "title": "Constraints"
+          },
+          "constraint_groups": {
+            "items": {
+              "$ref": "#/components/schemas/ConstraintGroup"
+            },
+            "type": "array",
+            "title": "Constraint Groups"
+          },
+          "assumptions": {
+            "items": {
+              "$ref": "#/components/schemas/Assumption"
+            },
+            "type": "array",
+            "title": "Assumptions"
+          },
+          "ambiguities": {
+            "items": {
+              "$ref": "#/components/schemas/Ambiguity"
+            },
+            "type": "array",
+            "title": "Ambiguities"
+          },
+          "date_expressions": {
+            "items": {
+              "$ref": "#/components/schemas/DateExpression"
+            },
+            "type": "array",
+            "title": "Date Expressions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "request_id",
+          "raw_text",
+          "input_mode",
+          "reference_datetime",
+          "origin",
+          "destination",
+          "date_range",
+          "party",
+          "budget",
+          "return_trip"
+        ],
+        "title": "TripRequest",
+        "description": "Запрос поездки после интерпретации (ТЗ §7)."
+      },
+      "TripState": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TripRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate_destinations": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateDestination"
+            },
+            "type": "array",
+            "title": "Candidate Destinations"
+          },
+          "transport_offers": {
+            "items": {
+              "$ref": "#/components/schemas/TravelOffer"
+            },
+            "type": "array",
+            "title": "Transport Offers"
+          },
+          "hotels": {
+            "items": {
+              "$ref": "#/components/schemas/Hotel"
+            },
+            "type": "array",
+            "title": "Hotels"
+          },
+          "hotel_offers": {
+            "items": {
+              "$ref": "#/components/schemas/HotelOffer"
+            },
+            "type": "array",
+            "title": "Hotel Offers"
+          },
+          "transfer_options": {
+            "items": {
+              "$ref": "#/components/schemas/TravelOffer"
+            },
+            "type": "array",
+            "title": "Transfer Options"
+          },
+          "selected_components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Selected Components"
+          },
+          "constraint_evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/ConstraintEvaluation"
+            },
+            "type": "array",
+            "title": "Constraint Evaluations"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "cart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cart"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "collecting",
+              "awaiting_clarification",
+              "searching",
+              "planned",
+              "agreed",
+              "cart",
+              "purchased_demo",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryEntry"
+            },
+            "type": "array",
+            "title": "History"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TripPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "search_termination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchTermination"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rankings": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Rankings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "trip_id",
+          "session_id",
+          "revision",
+          "request",
+          "cart",
+          "status",
+          "plan",
+          "search_termination"
+        ],
+        "title": "TripState",
+        "description": "Состояние поездки. Изменяется атомарно через ревизии (ARCH-05, REPLAN-02)."
+      },
+      "TurnResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "trip_id": {
+            "type": "string",
+            "title": "Trip Id"
+          },
+          "trip_revision": {
+            "type": "integer",
+            "title": "Trip Revision"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "collecting",
+              "awaiting_clarification",
+              "searching",
+              "planned",
+              "agreed",
+              "cart",
+              "purchased_demo",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "input_mode": {
+            "type": "string",
+            "enum": [
+              "structured_form",
+              "free_text_llm",
+              "free_text_replay",
+              "llm_unavailable"
+            ],
+            "title": "Input Mode"
+          },
+          "assistant_text": {
+            "type": "string",
+            "title": "Assistant Text"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/Ambiguity"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TripState"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "session_id",
+          "trip_id",
+          "trip_revision",
+          "status",
+          "input_mode",
+          "assistant_text",
+          "state"
+        ],
+        "title": "TurnResponse"
+      },
+      "UncheckedSource": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "default": "1.0.0"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "reason"
+        ],
+        "title": "UncheckedSource"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "Validity": {
+        "properties": {
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "provider",
+              "provisional_ttl",
+              "none"
+            ],
+            "title": "Basis"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "observed_at",
+          "valid_until",
+          "basis"
+        ],
+        "title": "Validity",
+        "description": "Срок актуальности оффера. TTL до DEC-21 — provisional, только в сторону осторожности."
+      }
+    }
+  }
+}

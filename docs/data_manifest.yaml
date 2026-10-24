@@ -9,7 +9,7 @@ updated_at: "2026-10-24"
 datasets:
   - id: odin_mock_generator
     status: included
-    location: src/odin/tools/adapters/mock.py
+    location: src/odin/tools/mock_data.py
     data_mode: mock
     origin: "синтетические данные, генерируются кодом детерминированно (seed из параметров запроса)"
     license: "код проекта"
@@ -18,16 +18,16 @@ datasets:
 
   - id: odin_demo_places
     status: included
-    location: src/odin/tools/adapters/mock_data.py
+    location: src/odin/tools/mock_data.py
     data_mode: mock
-    origin: "демо-справочник: русские названия городов и идентификаторы часовых поясов IANA (из базы tzdata)"
-    license: "названия городов и идентификаторы IANA — общедоступные сведения; база tzdata — public domain"
-    limitations: "ограниченный список; без координат; только для Mock-пути S1"
+    origin: "демо-справочник: русские названия городов, приблизительные координаты центров и идентификаторы часовых поясов IANA (из базы tzdata)"
+    license: "названия городов, координаты центров и идентификаторы IANA — общедоступные сведения; база tzdata — public domain"
+    limitations: "8 городов; только для Mock-пути S1; город вне списка — честный отказ"
     rights_confirmed: true
 
   - id: odin_demo_catalog
     status: included
-    location: src/odin/tools/adapters/mock_data.py
+    location: src/odin/tools/mock_data.py
     data_mode: mock
     origin: "редакционная заготовка команды: названия городов и теги закрытого словаря"
     license: "текст проекта"
