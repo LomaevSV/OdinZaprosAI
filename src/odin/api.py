@@ -39,7 +39,7 @@ from odin.contracts.api import (
     TurnResponse,
 )
 from odin.contracts.plan import DemoReceipt
-from odin.core.cart import CartError
+from odin.core.cart import CartError, CartStaleError
 from odin.logging_setup import configure_logging
 from odin.orchestrator import TurnResult
 from odin.storage import ConflictError, NotFoundError
@@ -126,6 +126,10 @@ def create_app(settings: Settings | None = None, *, application: Application | N
     @app.exception_handler(NotFoundError)
     async def _not_found(_: Request, exc: NotFoundError) -> JSONResponse:
         return _error(404, "not_found", str(exc))
+
+    @app.exception_handler(CartStaleError)
+    async def _cart_stale(_: Request, exc: CartStaleError) -> JSONResponse:
+        return _error(409, "cart_stale", str(exc))
 
     @app.exception_handler(CartError)
     async def _cart_error(_: Request, exc: CartError) -> JSONResponse:

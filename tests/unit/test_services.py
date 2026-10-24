@@ -219,8 +219,14 @@ def test_structured_form_interpretation() -> None:
 
 def test_interpreter_asks_only_blocking_questions_and_does_not_invent() -> None:
     outcome = interpret_structured_form(StructuredForm(destination="Казань"), session_id="s", request_id="r")
-    assert {q.field for q in outcome.questions} == {"origin", "adults"}
-    assert all(q.blocking_class == "blocking_now" for q in outcome.questions)
+    # UC-02/UC-03 (S4): город отправления и даты не предполагаются — blocking_now;
+    # состав группы — assumable_only_if_authorized, но DEC-25 не разрешает допущений → вопрос.
+    classes = {q.field: q.blocking_class for q in outcome.questions}
+    assert classes == {
+        "origin": "blocking_now",
+        "date_from": "blocking_now",
+        "adults": "assumable_only_if_authorized",
+    }
     unknown_city = interpret_structured_form(
         StructuredForm(origin="Москва", destination="Урюпинск", adults=1), session_id="s", request_id="r"
     )

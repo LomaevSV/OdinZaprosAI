@@ -34,6 +34,11 @@ class ComposerFacts:
     cart_id: str | None = None
     receipt_id: str | None = None
     questions: tuple[str, ...] = field(default=())
+    # Пояснения хода (например, итог пересборки) и допущения расчёта рядом с суммой (UC-03, DEC-25).
+    notes: tuple[str, ...] = field(default=())
+    assumptions: tuple[str, ...] = field(default=())
+    # Нарушенные условия (UC-06, UC-10: превышение бюджета видно, а не скрыто).
+    violations: tuple[str, ...] = field(default=())
 
     def numeric_values(self) -> set[str]:
         """Все числа, которые разрешено упоминать в тексте."""
@@ -81,7 +86,7 @@ def _money(amount: str | None, currency: str | None) -> str:
 
 def compose_answer(facts: ComposerFacts) -> str:
     """Шаблонный ответ по таблице фактов. Все числа берутся только из слотов."""
-    parts: list[str] = []
+    parts: list[str] = [note.rstrip(".") + "." for note in facts.notes]
     if facts.questions:
         parts.append("Нужно уточнить: " + " ".join(facts.questions))
         return "\n".join(parts)
@@ -111,9 +116,16 @@ def compose_answer(facts: ComposerFacts) -> str:
             parts.append(f"Итог: {_money(facts.known_amount, facts.currency)}.")
             if facts.completeness:
                 parts.append(COMPLETENESS_TEXT.get(facts.completeness, facts.completeness) + ".")
-    else:
+            # UC-03: допущения показываются рядом с суммой; без допущений — так и сказано.
+            if facts.assumptions:
+                parts.append("Допущения расчёта: " + "; ".join(facts.assumptions) + ".")
+            else:
+                parts.append("Допущений в расчёте нет: использованы только ваши данные.")
+    elif not facts.notes:
         parts.append("Данных для плана пока нет.")
 
+    if facts.violations:
+        parts.append("Нарушено: " + "; ".join(facts.violations) + ".")
     if facts.unknowns:
         parts.append("Не подтверждено: " + "; ".join(facts.unknowns) + ".")
     if facts.stop_reason:

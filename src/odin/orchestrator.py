@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,7 +30,8 @@ from odin.contracts import (
 )
 from odin.contracts.api import StructuredForm
 from odin.contracts.plan import CartItem
-from odin.core.cart import CartError, build_cart, confirm_cart, decline_cart
+from odin.core.cart import CartError, CartStaleError, build_cart, confirm_cart, decline_cart
+from odin.core.clarify import detect_changes, merge_answer
 from odin.core.constraints import (
     OfferFacts,
     aggregate_statuses,
@@ -38,13 +40,14 @@ from odin.core.constraints import (
     sort_by_rank,
 )
 from odin.core.money import sum_prices, total_price
-from odin.core.replan import invalidated_roles
+from odin.core.replan import changed_groups, invalidated_roles, split_change_set
 from odin.core.tree import coverage, tradeoffs
 from odin.core.trip import (
     arrival_checkin_check,
     checkout_departure_check,
     evaluate_budget,
     judge_availability,
+    offer_staleness,
 )
 from odin.llm.composer import ComposerFacts, safe_answer
 from odin.llm.gateway import LlmGateway
@@ -68,6 +71,23 @@ STOP_DEADLINE = "deadline"
 STOP_PROVIDER = "provider_unavailable"
 STOP_BLOCKED = "blocked_by_decision"
 
+# История явных выборов пользователя (REPLAN-02): последняя запись определяет, что выбрано явно.
+SELECTION_EVENT = "selection_applied"
+SELECTION_KEPT_EVENT = "selection_kept"
+
+
+def _selection_note(selections: dict[str, str]) -> str | None:
+    if not selections:
+        return None
+    return ";".join(f"{role}={offer_id}" for role, offer_id in sorted(selections.items()))
+
+
+def _parse_selection_note(note: str | None) -> dict[str, str]:
+    if not note:
+        return {}
+    pairs = (item.split("=", 1) for item in note.split(";") if "=" in item)
+    return {role: offer_id for role, offer_id in pairs}
+
 
 @dataclass(slots=True)
 class TurnResult:
@@ -75,6 +95,17 @@ class TurnResult:
     assistant_text: str
     questions: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str | None = None
+    facts_verified: bool = True
+
+
+@dataclass(slots=True)
+class _TurnDraft:
+    """Вычисленный, но ещё не записанный ход."""
+
+    state: TripState
+    assistant_text: str
+    agreed: bool = False
+    questions: list[dict[str, Any]] = field(default_factory=list)
     facts_verified: bool = True
 
 
@@ -108,12 +139,18 @@ class Orchestrator:
         registry: ToolRegistry,
         llm: LlmGateway,
         limits: Limits | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings
         self.storage = storage
         self.registry = registry
         self.llm = llm
         self.limits = limits or settings.limits
+        # Часы для проверки актуальности офферов (DEC-21); подменяются в тестах.
+        self.clock: Callable[[], datetime] = clock or (lambda: datetime.now(tz=UTC))
+
+    def _now(self) -> datetime:
+        return self.clock()
 
     # ------------------------------------------------------------------ сессии
 
@@ -159,7 +196,18 @@ class Orchestrator:
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
             self._start_turn(session_id, request_id, trip_id)
-            outcome = self._interpret(session_id=session_id, request_id=request_id, text=text, form=form)
+            outcome = self._interpret(
+                session_id=session_id, request_id=request_id, text=text, form=form, previous=current
+            )
+            # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
+            has_plan = current.plan is not None and bool(current.plan.components)
+            if has_plan and current.request is not None and not outcome.free_text_refused:
+                assert current.request is not None
+                if outcome.questions or (
+                    outcome.request is not None
+                    and detect_changes(request_to_form(current.request), request_to_form(outcome.request))
+                ):
+                    return self._apply_replan(current, outcome, request_id=request_id)
             return self._run_turn(current, outcome, request_id)
 
     def _start_turn(self, session_id: str, request_id: str, trip_id: str) -> None:
@@ -168,25 +216,50 @@ class Orchestrator:
         self.storage.add_event(session_id, "turn_started", {"request_id": request_id})
         self.storage.audit("turn_started", request_id=request_id, trip_id=trip_id, session_id=session_id)
 
-    def _run_turn(self, current: TripState, outcome: InterpretationOutcome, request_id: str) -> TurnResult:
+    def _run_turn(
+        self,
+        current: TripState,
+        outcome: InterpretationOutcome,
+        request_id: str,
+        *,
+        notes: tuple[str, ...] = (),
+    ) -> TurnResult:
         """Шаги 4–10 цикла хода (§2.4): уточнения → поиск → план → ответ → атомарная запись."""
+        draft = self._compute_turn(current, outcome, request_id, notes=notes)
+        return self._persist(
+            draft.state,
+            request_id,
+            assistant_text=draft.assistant_text,
+            agreed=draft.agreed,
+            questions=draft.questions,
+            facts_verified=draft.facts_verified,
+        )
+
+    def _compute_turn(
+        self,
+        current: TripState,
+        outcome: InterpretationOutcome,
+        request_id: str,
+        *,
+        notes: tuple[str, ...] = (),
+        search: bool = True,
+    ) -> _TurnDraft:
+        """Вычисление хода без записи: запись выполняет вызывающий (неудачная пересборка не пишется)."""
         state = current.evolve(**{"revision": current.revision + 1})
         if outcome.request is not None:
             state = state.evolve(**{"request": outcome.request})
 
         if outcome.free_text_refused:
             state = state.evolve(**{"status": "awaiting_clarification"})
-            return self._persist(state, request_id, assistant_text=" ".join(outcome.notes), agreed=False)
+            return _TurnDraft(state, " ".join(outcome.notes))
 
         if outcome.questions:
             state = state.evolve(**{"status": "awaiting_clarification"})
             facts = ComposerFacts(questions=tuple(question.question for question in outcome.questions))
             text_out, verified = safe_answer(facts)
-            return self._persist(
+            return _TurnDraft(
                 state,
-                request_id,
-                assistant_text=text_out,
-                agreed=False,
+                text_out,
                 questions=[question.model_dump(mode="json") for question in outcome.questions],
                 facts_verified=verified,
             )
@@ -197,25 +270,42 @@ class Orchestrator:
             state = self._inspiration_turn(state, request)
             names = tuple(candidate.place.name for candidate in state.candidate_destinations)
             text_out, verified = safe_answer(ComposerFacts(candidates=names))
-            return self._persist(
-                state, request_id, assistant_text=text_out, agreed=False, facts_verified=verified
-            )
+            return _TurnDraft(state, text_out, facts_verified=verified)
 
-        state = state.evolve(**{"status": "searching"})
-        state = self._search(state, request)
+        if search:
+            state = state.evolve(**{"status": "searching"})
+            state = self._search(state, request)
         state = self._build_plan(state, request)
-        text_out, verified = safe_answer(self._plan_facts(state))
-        return self._persist(
-            state, request_id, assistant_text=text_out, agreed=False, facts_verified=verified
-        )
+        text_out, verified = safe_answer(self._plan_facts(state, notes=notes))
+        agreed = state.plan is not None and bool(state.plan.components)
+        return _TurnDraft(state, text_out, agreed=agreed, facts_verified=verified)
 
     # ------------------------------------------------------------------ интерпретация
 
     def _interpret(
-        self, *, session_id: str, request_id: str, text: str | None, form: StructuredForm | None
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        text: str | None,
+        form: StructuredForm | None,
+        previous: TripState | None = None,
     ) -> InterpretationOutcome:
+        # UC-02: ответ на уточнение дополняет полученное ранее, повторно не спрашиваем.
+        answering = (
+            previous is not None
+            and previous.status == "awaiting_clarification"
+            and previous.request is not None
+        )
+
+        def interpret(value: StructuredForm) -> InterpretationOutcome:
+            if answering:
+                assert previous is not None and previous.request is not None
+                value = merge_answer(request_to_form(previous.request), value)
+            return interpret_structured_form(value, session_id=session_id, request_id=request_id)
+
         if form is not None:
-            return interpret_structured_form(form, session_id=session_id, request_id=request_id)
+            return interpret(form)
         if text:
             result = self.llm.complete_structured(
                 role="interpreter",
@@ -228,14 +318,13 @@ class Orchestrator:
                     form_from_replay = StructuredForm.model_validate(result.structured_output)
                 except ValueError:
                     return refuse_free_text(session_id=session_id, request_id=request_id)
-                outcome = interpret_structured_form(
-                    form_from_replay, session_id=session_id, request_id=request_id
-                )
+                outcome = interpret(form_from_replay)
                 return InterpretationOutcome(
                     request=outcome.request,
                     mode="free_text_replay",
                     questions=outcome.questions,
                     notes=[*outcome.notes, *result.uncertainties],
+                    decisions=outcome.decisions,
                 )
             return refuse_free_text(session_id=session_id, request_id=request_id)
         return refuse_free_text(session_id=session_id, request_id=request_id)
@@ -504,7 +593,19 @@ class Orchestrator:
         plan_source = mock_source(
             "build_plan", f"plan-{state.trip_id}-{state.revision}", as_of, source_type="computed"
         )
-        total = total_price(sum_prices(prices, component_ids), plan_source, as_of)
+        totals = sum_prices(prices, component_ids)
+        # PRICE-01, SCOPE-01: без найденного обязательного компонента итог не может быть полным.
+        missing_roles = [role for role in ("hotel", "outbound") if role not in selected]
+        if request.return_trip and "return" not in selected:
+            missing_roles.append("return")
+        if missing_roles and totals.completeness == "complete":
+            totals = replace(
+                totals,
+                completeness="partial",
+                unknown_reason="data_missing",
+                partial_components=(*totals.partial_components, *missing_roles),
+            )
+        total = total_price(totals, plan_source, as_of)
 
         checks = self._connection_checks(selected, hotel_by_id)
         budget_evaluation = self._budget_evaluation(request, total, state)
@@ -632,7 +733,7 @@ class Orchestrator:
             plan = state.plan
             if plan is None or not plan.components:
                 raise CartError("план не собран: корзина недоступна")
-            now = datetime.now(tz=UTC)
+            now = self._now()
             new_revision = state.revision + 1
             items = [self._cart_item(state, component) for component in plan.components]
             cart = build_cart(
@@ -641,7 +742,7 @@ class Orchestrator:
                 items=items,
                 total_price=plan.total_price,
                 completeness=plan.completeness,
-                significant_unknowns=self._significant_unknowns(state),
+                significant_unknowns=self._significant_unknowns(state, now),
                 created_at=now,
             )
             new_state = state.evolve(
@@ -702,7 +803,26 @@ class Orchestrator:
                 raise ConflictError(
                     "ревизия поездки изменилась после формирования корзины: подтверждение недоступно (REPLAN-02)"
                 )
-            now = datetime.now(tz=UTC)
+            now = self._now()
+            state = self.storage.get_state(cart.trip_id)
+            # DEC-21: устаревшее после формирования корзины предложение не подтверждается молча —
+            # нужна перепроверка (новый поиск) или новая корзина, где риск перечислен для согласия.
+            unlisted = [
+                risk for risk in self._stale_risks(state, now) if risk not in cart.significant_unknowns
+            ]
+            if unlisted:
+                self.storage.audit(
+                    "demo_purchase_rejected_stale",
+                    request_id=request_id,
+                    trip_id=cart.trip_id,
+                    payload={"cart_id": cart_id, "stale": unlisted},
+                )
+                raise CartStaleError(
+                    "предложения устарели после формирования корзины: "
+                    + "; ".join(unlisted)
+                    + ". Выполните перепроверку (новый поиск) или откройте корзину заново и "
+                    "подтвердите риск отдельно (DEC-21)"
+                )
             new_cart, receipt = confirm_cart(
                 cart,
                 confirmation_id=confirmation_id,
@@ -711,7 +831,6 @@ class Orchestrator:
                 risk_acknowledgement=risk_acknowledgement,
                 now=now,
             )
-            state = self.storage.get_state(cart.trip_id)
             new_revision = state.revision + 1
             new_state = state.evolve(
                 **{
@@ -743,7 +862,7 @@ class Orchestrator:
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
         with self.storage.session_lock(session_id):
             self._locked_head(cart.trip_id, trip_revision)
-            declined = decline_cart(cart, now=datetime.now(tz=UTC))
+            declined = decline_cart(cart, now=self._now())
             state = self.storage.get_state(cart.trip_id)
             new_revision = state.revision + 1
             new_state = state.evolve(
@@ -785,10 +904,24 @@ class Orchestrator:
             if unknown_ids:
                 raise CartError(f"неизвестные варианты: {', '.join(unknown_ids)}")
             new_state = state.evolve(
-                **{"revision": state.revision + 1, "selected_components": dict(selections), "cart": None}
+                **{
+                    "revision": state.revision + 1,
+                    "selected_components": dict(selections),
+                    "cart": None,
+                    "history": [
+                        *state.history,
+                        self._history(
+                            revision=state.revision + 1,
+                            request_id=request_id,
+                            event=SELECTION_EVENT,
+                            note=_selection_note(selections),
+                        ),
+                    ],
+                }
             )
             new_state = self._build_plan(new_state, state.request)
-            self.storage.append_revision(new_state, request_id, agreed=False)
+            agreed = new_state.plan is not None and bool(new_state.plan.components)
+            self.storage.append_revision(new_state, request_id, agreed=agreed)
             self.storage.add_event(session_id, "selection_applied", {"revision": new_state.revision})
             return new_state
 
@@ -802,35 +935,190 @@ class Orchestrator:
             state = self.storage.get_state(trip_id)
             if state.request is None:
                 raise CartError("нет исходного запроса: используйте сообщение")
-            changes = change_set.model_dump(exclude_unset=True)
-            table_changes = {key: value for key, value in changes.items() if not key.endswith("_required")}
-            roles, reasons = invalidated_roles(table_changes)
-            merged = {**request_to_form(state.request).model_dump(), **changes}
+            requested = change_set.model_dump(exclude_unset=True)
+            merged = {**request_to_form(state.request).model_dump(), **requested}
             form = StructuredForm.model_validate(merged)
             self._start_turn(session_id, request_id, trip_id)
             outcome = interpret_structured_form(form, session_id=session_id, request_id=request_id)
-            base = state.evolve(**{"cart": None, "plan": None, "selected_components": {}})
-            result = self._run_turn(base, outcome, request_id)
-            reused = [
-                role
-                for role in ("outbound", "return", "hotel", "transfer_in", "transfer_out")
-                if role not in roles
-            ]
+            return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
+
+    def _apply_replan(
+        self,
+        state: TripState,
+        outcome: InterpretationOutcome,
+        *,
+        request_id: str,
+        requested: dict[str, Any] | None = None,
+    ) -> TurnResult:
+        """Менеджер пересборки (UC-09, REPLAN-01, REPLAN-02, ARCH-05).
+
+        - инвалидируются только зависимые роли по таблице REPLAN-01;
+        - явно выбранные пользователем компоненты прочих ролей переносятся, только если оффер
+          не устарел (DEC-21); устаревший оффер как действующий не переносится;
+        - без инвалидации и при свежих офферах новый поиск не нужен — пересчитываются оценки и итог;
+        - неуспешная пересборка не записывается: остаётся последняя согласованная ревизия.
+        """
+        assert state.request is not None
+        old_form = request_to_form(state.request)
+        new_form = request_to_form(outcome.request) if outcome.request is not None else old_form
+        changes = detect_changes(old_form, new_form)
+        table_changes, _ = split_change_set(changes)
+        roles, reasons = invalidated_roles(table_changes)
+        now = self._now()
+
+        kept: dict[str, str] = {}
+        recheck: dict[str, str] = {}
+        for role, offer_id in self._explicit_selections(state).items():
+            if role in roles:
+                continue
+            offer = self._offer_by_id(state, offer_id)
+            if offer is None:
+                continue
+            if self._is_stale(offer, now)[0]:
+                # Устаревший оффер не переносится как действующий: только если новый поиск вернёт его снова.
+                recheck[role] = offer_id
+                continue
+            kept[role] = offer_id
+        any_stale = bool(self._stale_risks(state, now)) or bool(recheck)
+        search = bool(roles) or any_stale or state.plan is None
+
+        groups = changed_groups(changes) if changes else []
+        notes = [
+            "Пересборка: изменено — " + (", ".join(groups) if groups else "ничего"),
+            "заново проверены — " + (", ".join(roles) if roles else "оценки и итог без нового поиска"),
+        ]
+        if not roles and any_stale:
+            notes[1] = "заново проверены — все компоненты: найденные предложения устарели (DEC-21)"
+
+        base = state.evolve(**{"cart": None, "plan": None, "selected_components": {**kept, **recheck}})
+        draft = self._compute_turn(base, outcome, request_id, notes=(), search=search)
+        selected = draft.state.selected_components
+        rechecked = [role for role, offer_id in recheck.items() if selected.get(role) == offer_id]
+        stale_dropped = [role for role in recheck if role not in rechecked]
+        if kept:
+            notes.append("сохранены выбранные вами — " + ", ".join(sorted(kept)))
+        if rechecked:
+            notes.append("перепроверены и сохранены выбранные вами — " + ", ".join(rechecked))
+        if stale_dropped:
+            notes.append("устаревшие предложения не перенесены как действующие — " + ", ".join(stale_dropped))
+        if draft.state.plan is not None and draft.state.plan.components and not outcome.questions:
+            text_out, verified = safe_answer(self._plan_facts(draft.state, notes=tuple(notes)))
+            draft.assistant_text, draft.facts_verified = text_out, verified
+        new_request = draft.state.request
+        failed = (
+            bool(outcome.questions)
+            or outcome.request is None
+            or (
+                new_request is not None
+                and new_request.destination is not None
+                and (draft.state.plan is None or not draft.state.plan.components)
+            )
+        )
+        change_view = {key: str(value) for key, value in (requested or changes).items()}
+
+        if failed:
             event = ReplanEvent(
                 request_id=request_id,
                 old_revision=state.revision,
-                change_set={key: str(value) for key, value in changes.items()},
+                change_set=change_view,
                 invalidated_components=list(roles),
                 reused_components=[],
-                new_revision=result.state.revision,
-                validation_result="ok" if result.state.plan is not None else "partial",
-                note="; ".join(reasons)[:500]
-                + (f"; без повторного использования в S1: {', '.join(reused)}" if reused else ""),
+                new_revision=None,
+                validation_result="failed",
+                note=("; ".join(reasons) or "изменений нет")[:500],
             )
             self.storage.audit(
-                "replan", request_id=request_id, trip_id=trip_id, payload=event.model_dump(mode="json")
+                "replan",
+                request_id=request_id,
+                trip_id=state.trip_id,
+                session_id=state.session_id,
+                payload=event.model_dump(mode="json"),
             )
-            return result
+            self.storage.add_event(state.session_id, "replan_failed", {"kept_revision": state.revision})
+            reason = (
+                "нужно уточнение"
+                if outcome.questions
+                else "план с новыми параметрами не собран — ни одного компонента не найдено"
+            )
+            failure_note = (
+                f"Пересборка не выполнена: {reason}. "
+                f"Последний согласованный план сохранён без изменений (ревизия {state.revision})"
+            )
+            termination = draft.state.search_termination
+            facts = ComposerFacts(
+                notes=(failure_note,),
+                questions=tuple(question.question for question in outcome.questions),
+                stop_reason=termination.reason if termination and not outcome.questions else None,
+            )
+            text_out, verified = safe_answer(facts)
+            return TurnResult(
+                state=state,
+                assistant_text=text_out,
+                questions=draft.questions,
+                stop_reason=facts.stop_reason,
+                facts_verified=verified,
+            )
+
+        new_state = draft.state
+        explicit_now = {
+            role: offer_id for role, offer_id in {**kept, **recheck}.items() if selected.get(role) == offer_id
+        }
+        if search:
+            reused = [role for role, offer_id in kept.items() if selected.get(role) == offer_id]
+        else:
+            reused = [component.role for component in (new_state.plan.components if new_state.plan else [])]
+        new_state = new_state.evolve(
+            **{
+                "history": [
+                    *new_state.history,
+                    self._history(
+                        revision=new_state.revision,
+                        request_id=request_id,
+                        event="replan",
+                        note="; ".join(notes)[:500],
+                    ),
+                    self._history(
+                        revision=new_state.revision,
+                        request_id=request_id,
+                        event=SELECTION_KEPT_EVENT,
+                        note=_selection_note(explicit_now),
+                    ),
+                ]
+            }
+        )
+        result = self._persist(
+            new_state,
+            request_id,
+            assistant_text=draft.assistant_text,
+            agreed=draft.agreed,
+            questions=draft.questions,
+            facts_verified=draft.facts_verified,
+        )
+        event = ReplanEvent(
+            request_id=request_id,
+            old_revision=state.revision,
+            change_set=change_view,
+            invalidated_components=list(roles),
+            reused_components=reused,
+            new_revision=new_state.revision,
+            validation_result="ok" if draft.agreed else "partial",
+            note=("; ".join(reasons) or "изменений нет")[:500],
+        )
+        self.storage.audit(
+            "replan",
+            request_id=request_id,
+            trip_id=state.trip_id,
+            session_id=state.session_id,
+            payload=event.model_dump(mode="json"),
+        )
+        return result
+
+    def _explicit_selections(self, state: TripState) -> dict[str, str]:
+        """Явные выборы пользователя — из последней записи истории о выборе (REPLAN-02)."""
+        for entry in reversed(state.history):
+            if entry.event in (SELECTION_EVENT, SELECTION_KEPT_EVENT):
+                return _parse_selection_note(entry.note)
+        return {}
 
     # ------------------------------------------------------------------ служебное
 
@@ -854,8 +1142,8 @@ class Orchestrator:
             source=price.source,
         )
 
-    def _significant_unknowns(self, state: TripState) -> list[str]:
-        """Существенные неизвестные для отдельного согласия с рисками (UC-08)."""
+    def _significant_unknowns(self, state: TripState, now: datetime) -> list[str]:
+        """Существенные неизвестные для отдельного согласия с рисками (UC-08, DEC-21)."""
         assert state.plan is not None
         risks = list(state.plan.unknowns)
         if state.plan.trip_data_mode != "live":
@@ -865,7 +1153,35 @@ class Orchestrator:
         for check in state.plan.connection_checks:
             if check.status != "matched":
                 risks.append(f"стык {check.from_component} → {check.to_component}: {check.status}")
+        risks.extend(self._stale_risks(state, now))
         return sorted(set(risks))
+
+    def _offer_by_id(self, state: TripState, offer_id: str) -> Any | None:
+        for offer in [*state.hotel_offers, *state.transport_offers, *state.transfer_options]:
+            if offer.offer_id == offer_id:
+                return offer
+        return None
+
+    def _is_stale(self, offer: Any, now: datetime) -> tuple[bool, str]:
+        validity = offer.validity
+        return offer_staleness(validity.observed_at, validity.valid_until, now, self.limits.offer_ttl_minutes)
+
+    def _stale_risks(self, state: TripState, now: datetime) -> list[str]:
+        """Устаревшие компоненты плана (DEC-21, provisional TTL): формулировка детерминирована."""
+        if state.plan is None:
+            return []
+        risks: list[str] = []
+        for component in state.plan.components:
+            offer = self._offer_by_id(state, component.offer_id)
+            if offer is None:
+                continue
+            stale, reason = self._is_stale(offer, now)
+            if stale:
+                risks.append(
+                    f"предложение «{component.title}» ({component.role}) устарело: {reason}; "
+                    "требуется перепроверка или согласие с риском"
+                )
+        return risks
 
     def _budget_evaluation(
         self, request: TripRequest, total: Price, state: TripState
@@ -949,7 +1265,7 @@ class Orchestrator:
             return state.plan.total_price
         raise CartError(f"цена компонента {component.component_id} неизвестна")
 
-    def _plan_facts(self, state: TripState) -> ComposerFacts:
+    def _plan_facts(self, state: TripState, *, notes: tuple[str, ...] = ()) -> ComposerFacts:
         plan = state.plan
         request = state.request
         assert plan is not None and request is not None
@@ -974,6 +1290,19 @@ class Orchestrator:
             offers_count=len(state.hotel_offers) + len(state.transport_offers),
             unknowns=tuple(plan.unknowns),
             stop_reason=state.search_termination.reason if state.search_termination else None,
+            notes=notes,
+            violations=tuple(
+                dict.fromkeys(
+                    evaluation.reason
+                    for evaluation in plan.constraint_evaluations
+                    if evaluation.status == "violated"
+                )
+            ),
+            assumptions=tuple(
+                f"{assumption.field}: {assumption.value} ({assumption.reason})"
+                for assumption in request.assumptions
+                if assumption.shown_with_price
+            ),
         )
 
     def _history(self, *, revision: int, request_id: str, event: str, note: str | None = None):

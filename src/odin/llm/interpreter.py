@@ -12,26 +12,28 @@ from datetime import UTC, date, datetime
 from odin.contracts import Party, Place, TripRequest
 from odin.contracts.api import StructuredForm
 from odin.contracts.trip import Ambiguity, Budget, Constraint, DateRange
+from odin.core import clarify
 from odin.tools.mock_data import normalize_city
 
 
 @dataclass(frozen=True, slots=True)
 class InterpretationOutcome:
-    """Результат интерпретации: черновик `TripRequest` и блокирующие вопросы (только `blocking_now`)."""
+    """Результат интерпретации: черновик `TripRequest`, вопросы политики UC-02 и решения по полям."""
 
     request: TripRequest | None
     mode: str
     questions: list[Ambiguity] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     free_text_refused: bool = False
+    decisions: list[clarify.ClarificationDecision] = field(default_factory=list)
 
 
-def _question(field_name: str, question: str) -> Ambiguity:
+def _question(field_name: str, question: str, blocking_class: str = "blocking_now") -> Ambiguity:
     return Ambiguity(
         ambiguity_id=f"amb-{field_name}",
         field=field_name,
         question=question,
-        blocking_class="blocking_now",
+        blocking_class=blocking_class,  # type: ignore[arg-type]
         source_span=None,
     )
 
@@ -104,31 +106,24 @@ def interpret_structured_form(
 ) -> InterpretationOutcome:
     """Строит `TripRequest` из формы. Блокирующие вопросы — только то, без чего нельзя искать."""
     reference = reference_datetime or datetime.now(tz=UTC)
-    questions: list[Ambiguity] = []
     notes: list[str] = []
 
     origin = _place(form.origin)
     destination = _place(form.destination)
-    if origin is None:
-        questions.append(_question("origin", "Откуда едем? Город отправления обязателен."))
-    if destination is None and not form.wishes_tags:
-        questions.append(_question("destination", "Куда едем? Назовите направление или пожелания."))
-    if form.adults is None:
-        questions.append(_question("adults", "Сколько взрослых путешествует?"))
+    decisions = clarify.decide(form)
+    questions = [
+        _question(decision.field, decision.question or "", decision.blocking_class)
+        for decision in clarify.questions(decisions)
+    ]
 
     date_range = None
-    if form.date_from is not None and form.date_to is not None:
-        if form.date_to <= form.date_from:
-            questions.append(_question("date_to", "Дата возвращения должна быть позже даты отъезда."))
-        else:
-            date_range = DateRange(
-                start=form.date_from,
-                end=form.date_to,
-                timezone=origin.timezone if origin else None,
-            )
-    elif form.date_from is not None or form.date_to is not None:
-        questions.append(_question("date_from", "Нужны обе даты поездки: отъезд и возвращение."))
-    else:
+    if form.date_from is not None and form.date_to is not None and form.date_to > form.date_from:
+        date_range = DateRange(
+            start=form.date_from,
+            end=form.date_to,
+            timezone=origin.timezone if origin else None,
+        )
+    elif form.date_from is None and form.date_to is None:
         notes.append("даты не указаны: цена и наличие без дат не запрашиваются (UC-03)")
 
     pets = [pet for pet in form.pets]
@@ -156,9 +151,14 @@ def interpret_structured_form(
         return_trip=form.return_trip,
         wishes_tags=list(form.wishes_tags),
         constraints=_constraints(form),
+        ambiguities=list(questions),
     )
     return InterpretationOutcome(
-        request=request, mode="structured_fallback", questions=questions, notes=notes
+        request=request,
+        mode="structured_fallback",
+        questions=questions,
+        notes=notes,
+        decisions=decisions,
     )
 
 

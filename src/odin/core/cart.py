@@ -22,6 +22,10 @@ class CartError(ValueError):
     """Недопустимая операция с корзиной: причина возвращается клиенту, действие не выполняется."""
 
 
+class CartStaleError(CartError):
+    """Предложения корзины устарели после её формирования (DEC-21): перепроверка или новое согласие."""
+
+
 def _seed(*parts: str) -> str:
     return hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:16]
 

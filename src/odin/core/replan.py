@@ -13,7 +13,20 @@ from typing import Literal
 
 ComponentRole = Literal["outbound", "return", "hotel", "transfer_in", "transfer_out"]
 
-ChangeGroup = Literal["dates", "destination", "origin", "party", "budget", "pets", "preferences"]
+ChangeGroup = Literal["dates", "destination", "origin", "party", "budget", "pets", "transport", "preferences"]
+
+ALL_ROLES: tuple[ComponentRole, ...] = ("outbound", "return", "hotel", "transfer_in", "transfer_out")
+
+GROUP_TITLES: dict[str, str] = {
+    "dates": "даты",
+    "destination": "направление",
+    "origin": "город отправления",
+    "party": "состав группы",
+    "budget": "бюджет",
+    "pets": "животное",
+    "transport": "вид транспорта",
+    "preferences": "предпочтения",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,20 +53,20 @@ REPLAN_TABLE: tuple[ReplanRule, ...] = (
     ReplanRule(
         group="origin",
         fields=("origin",),
-        invalidates=("outbound", "return"),
-        reason="меняется точка отправления",
+        invalidates=("outbound", "return", "transfer_in", "transfer_out"),
+        reason="город отправления: транспорт, точки прибытия и трансфер, стоимость (ТЗ REPLAN-01)",
     ),
     ReplanRule(
         group="party",
         fields=("adults", "children_ages"),
-        invalidates=("outbound", "return", "hotel"),
-        reason="состав группы влияет на вместимость и тарифы",
+        invalidates=("outbound", "return", "hotel", "transfer_in", "transfer_out"),
+        reason="состав группы: размещение, билеты, цены, трансфер, корзина (ТЗ REPLAN-01)",
     ),
     ReplanRule(
         group="pets",
         fields=("pets",),
-        invalidates=("outbound", "return", "hotel"),
-        reason="правила животного перепроверяются у транспорта и отеля",
+        invalidates=("outbound", "return", "hotel", "transfer_in", "transfer_out"),
+        reason="животное: правила отеля и транспорта, трансфер, совместимость, корзина (ТЗ REPLAN-01)",
     ),
     ReplanRule(
         group="budget",
@@ -62,8 +75,14 @@ REPLAN_TABLE: tuple[ReplanRule, ...] = (
         reason="бюджет меняет только оценку условий, а не сами офферы",
     ),
     ReplanRule(
+        group="transport",
+        fields=("transport_modes",),
+        invalidates=("outbound", "return", "transfer_in", "transfer_out"),
+        reason="вид транспорта — параметр поиска: транспорт, точки прибытия и трансфер перепроверяются",
+    ),
+    ReplanRule(
         group="preferences",
-        fields=("breakfast", "stars_min", "free_cancellation", "wishes_tags", "transport_modes"),
+        fields=("breakfast", "stars_min", "free_cancellation", "wishes_tags"),
         invalidates=(),
         reason="предпочтения оцениваются на уже найденных офферах",
     ),
@@ -97,3 +116,32 @@ def reusable_roles(
 ) -> list[ComponentRole]:
     dropped = set(invalidated)
     return [role for role in all_roles if role not in dropped]
+
+
+# Смена обязательности меняет только оценку условий, не офферы.
+_REQUIRED_FLAG_GROUP: dict[str, ChangeGroup] = {
+    "budget_required": "budget",
+    "pets_required": "pets",
+    "transport_modes_required": "transport",
+    "breakfast_required": "preferences",
+    "stars_required": "preferences",
+    "free_cancellation_required": "preferences",
+}
+
+
+def split_change_set(change_set: Mapping[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+    """Делит изменения на поля таблицы REPLAN-01 и флаги обязательности."""
+    table = {key: value for key, value in change_set.items() if key not in _REQUIRED_FLAG_GROUP}
+    flags = {key: value for key, value in change_set.items() if key in _REQUIRED_FLAG_GROUP}
+    return table, flags
+
+
+def changed_groups(change_set: Mapping[str, object]) -> list[str]:
+    """Названия изменённых групп для пользователя (без повторов, в порядке полей)."""
+    titles: list[str] = []
+    for key in change_set:
+        group = _REQUIRED_FLAG_GROUP.get(key) or classify_change(key).group
+        title = GROUP_TITLES[group]
+        if title not in titles:
+            titles.append(title)
+    return titles

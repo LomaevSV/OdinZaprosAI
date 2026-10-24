@@ -485,8 +485,16 @@ def test_offer_staleness_uses_provisional_ttl() -> None:
 def test_replan_table_as_data() -> None:
     roles, reasons = invalidated_roles({"date_from": "2026-11-13"})
     assert set(roles) == {"outbound", "return", "hotel", "transfer_in", "transfer_out"} and reasons
+    all_roles = {"outbound", "return", "hotel", "transfer_in", "transfer_out"}
+    # ТЗ REPLAN-01: животное — правила отеля и транспорта, трансфер, совместимость.
     roles, _ = invalidated_roles({"pets": [{"kind": "dog", "count": 1}]})
-    assert set(roles) == {"outbound", "return", "hotel"}
+    assert set(roles) == all_roles
+    # ТЗ REPLAN-01: состав группы — размещение, билеты, цены, трансфер.
+    roles, _ = invalidated_roles({"adults": 3})
+    assert set(roles) == all_roles
+    # Город отправления — все зависящие от маршрута компоненты; отель остаётся.
+    roles, _ = invalidated_roles({"origin": "Казань"})
+    assert set(roles) == {"outbound", "return", "transfer_in", "transfer_out"}
     roles, _ = invalidated_roles({"budget_amount": "50000"})
     assert roles == []
     with pytest.raises(KeyError):
