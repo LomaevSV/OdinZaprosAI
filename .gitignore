@@ -1,0 +1,32 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Секреты и локальная конфигурация (SECURITY-01)
+.env
+.env.*
+!.env.example
+
+# Локальные данные выполнения: SQLite, Replay-снимки, журналы (DEC-24, SECURITY-01)
+var/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+replay_store/
+*.log
+
+# Исходные исследовательские JSON не импортируются (возможен ключ 2ГИС)
+research_raw/
+odin_probe_*.json
+
+# Сырые результаты прогонов (отчёты в docs/reports/ коммитятся)
+reports/raw/
+
+# IDE
+.idea/
+.vscode/

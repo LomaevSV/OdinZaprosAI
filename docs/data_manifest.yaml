@@ -1,0 +1,74 @@
+# Манифест данных (`data_manifest`) — происхождение, режим, лицензии (ТЗ 0.7 §12, GOAL-02, LEGAL-01)
+#
+# Каждый набор данных, включённый в репозиторий или используемый приложением, описан здесь.
+# Наборы, которые ещё не загружены, помечены status: not_included.
+
+schema_version: "1.0.0"
+updated_at: "2026-10-24"
+
+datasets:
+  - id: odin_mock_generator
+    status: included
+    location: src/odin/tools/adapters/mock.py
+    data_mode: mock
+    origin: "синтетические данные, генерируются кодом детерминированно (seed из параметров запроса)"
+    license: "код проекта"
+    limitations: "не цены, не наличие, не расписание; названия «ДЕМО-…»; доступность всегда unknown"
+    rights_confirmed: true
+
+  - id: odin_demo_places
+    status: included
+    location: src/odin/tools/adapters/mock_data.py
+    data_mode: mock
+    origin: "демо-справочник: русские названия городов и идентификаторы часовых поясов IANA (из базы tzdata)"
+    license: "названия городов и идентификаторы IANA — общедоступные сведения; база tzdata — public domain"
+    limitations: "ограниченный список; без координат; только для Mock-пути S1"
+    rights_confirmed: true
+
+  - id: odin_demo_catalog
+    status: included
+    location: src/odin/tools/adapters/mock_data.py
+    data_mode: mock
+    origin: "редакционная заготовка команды: названия городов и теги закрытого словаря"
+    license: "текст проекта"
+    limitations: "теги не проверены внешним источником; климат и цены не загружены; визы не проверены"
+    rights_confirmed: true
+
+  - id: llm_interpretation_replay
+    status: not_included
+    location: "var/ (локальная SQLite, исключена из git)"
+    data_mode: replay
+    origin: "только реально записанные ответы LLM после DEC-07"
+    license: "условия провайдера LLM — DEC-07, DEC-33"
+    limitations: "на 24.10 записей нет"
+    rights_confirmed: false
+
+  - id: provider_replay_snapshots
+    status: not_included
+    location: "replay_store/ (исключено из git)"
+    data_mode: replay
+    origin: "ответы утверждённых Live-провайдеров (S2+)"
+    license: "права на распространение не подтверждены — DEC-24, DEC-33"
+    limitations: "в поставку не входят до решения"
+    rights_confirmed: false
+
+  - id: ourairports
+    status: not_included
+    data_mode: live_snapshot
+    origin: "OurAirports CSV (однократная загрузка — DEC-12)"
+    license: "public domain (подтвердить — DEC-33)"
+    rights_confirmed: false
+
+  - id: climate_norms
+    status: not_included
+    data_mode: live_snapshot
+    origin: "Open-Meteo archive/climate (S5, DEC-12)"
+    license: "CC BY 4.0 / некоммерческий тариф — DEC-33"
+    rights_confirmed: false
+
+  - id: research_probe_json
+    status: not_included
+    origin: "первичные JSON раундов 1–17.1"
+    license: "—"
+    limitations: "на машине отсутствуют; файл 17.1 может содержать временный ключ 2ГИС — не импортировать без очистки"
+    rights_confirmed: false
