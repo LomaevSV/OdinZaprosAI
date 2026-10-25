@@ -219,3 +219,20 @@ def test_unknown_wish_tags_go_to_unparsed_and_bad_payload_is_none() -> None:
     assert form.wishes_tags == ["море"] and report.unparsed == ["к морю и на сёрфинг"]
     assert parse_delta({"adults": {"value": "много", "span": "x"}}) is None
     assert parse_delta({"unexpected": 1}) is not None  # лишние ключи модели игнорируются
+
+
+@pytest.mark.req("SECURITY-01", "DEC-07")
+def test_redaction_hides_secrets_and_personal_numbers_but_keeps_trip_facts() -> None:
+    from odin.llm.privacy import PLACEHOLDER, redact
+
+    text = (
+        "Из Москвы в Казань 2026-11-20 - 2026-11-22 до 60 000 рублей, звоните +7 (912) 345-67-89, "
+        "пишите ivan@example.test, карта 4111 1111 1111 1111, ключ " + "sk-" + "abcdefghijklmnop1234"
+    )
+    result = redact(text)
+    assert "+7 (912)" not in result.text and "ivan@example.test" not in result.text
+    assert "4111" not in result.text and "sk-abcdef" not in result.text
+    assert "2026-11-20 - 2026-11-22" in result.text and "60 000 рублей" in result.text
+    assert result.text.count(PLACEHOLDER) == 4
+    assert set(result.kinds) == {"ключ или токен", "e-mail", "номер телефона, карты или документа"}
+    assert result.notice() and redact("Хочу в Казань вдвоём").changed is False

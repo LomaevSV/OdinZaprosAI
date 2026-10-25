@@ -346,10 +346,8 @@ def test_mixed_falls_back_to_marked_mock_and_live_stays_honest(make_client: Any)
     assert turn["status"] == "planned" and plan["components"]
     assert {component["data_mode"] for component in plan["components"]} == {"mock"}
     assert "ДЕМО" in turn["assistant_text"]
-    assert (
-        any("DEC-23" in warning for warning in turn["state"].get("warnings", []))
-        or plan["trip_data_mode"] == "mock"
-    )
+    # Нет незаметной подмены: в ответе прямо сказано, что Live недоступен и показан ДЕМО-вариант.
+    assert "Live-источник недоступен" in turn["assistant_text"] and "ДЕМО-вариант" in turn["assistant_text"]
 
     strict = make_client("live", FakeTutu(fail_status=503), FakeRest(), name="strict")
     turn = _plan(strict, transport_modes=["rail"])
@@ -358,6 +356,7 @@ def test_mixed_falls_back_to_marked_mock_and_live_stays_honest(make_client: Any)
     assert termination["reason"] == "provider_unavailable"
     assert any(item["source"].startswith("tutu_mcp") for item in termination["unchecked_sources"])
     assert "ДЕМО-" not in str(turn["state"]["transport_offers"])
+    assert "недоступен" in turn["assistant_text"] and "ДЕМО-вариант" not in turn["assistant_text"]
 
 
 @pytest.mark.req("UC-03")

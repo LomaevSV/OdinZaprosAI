@@ -43,6 +43,7 @@ providers:
     live_probes:
       historical: "research раунды 13–15 (23.10): tools/list, поиск avia/rail/bus/hotels/multitransport, детали, seatmap — HTTP 200, содержательные ответы"
       runtime_24_10: "initialize 200 (~0,4 с); tools/list — 17 инструментов; по одному поиску hotels/rail/avia за 1,7–2,2 с"
+      runtime_25_10_e2e: "T-E2E-LIVE-01 (DEC-11, дополнение): search_rail и search_hotels в сквозном сценарии Москва → Казань — OK, план целиком Live, 5,3 с на ход вместе с геокодингом и OSRM"
       runtime_25_10: "DEC-11, собственный MCP-клиент: initialize 0,38 с (протокол 2025-06-18, без сессии), tools/list 17; search_rail 2,2 с, search_avia 0,8 с, search_hotels 1,8 с, get_offer_details(hotels) 5,1 с — isError=false, ответ JSON в content[].text; meta.pricing.basis: rail per_seat, avia party_total; hotels price_basis stay_total"
     errors_observed:
       "401": "нет данных"

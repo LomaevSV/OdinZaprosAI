@@ -63,6 +63,7 @@ from odin.llm.interpreter import (
     refuse_free_text,
     request_to_form,
 )
+from odin.llm.privacy import redact
 from odin.logging_setup import get_logger
 from odin.storage import ConflictError, NotFoundError, Storage
 from odin.tools.live_common import live_source
@@ -193,6 +194,8 @@ class Orchestrator:
         self.clock: Callable[[], datetime] = clock or (lambda: datetime.now(tz=UTC))
         # Кэш геокодинга городов (часовой пояс и координаты города не меняются между ходами).
         self._places: dict[str, ResolvedPlace] = {}
+        # Уведомления хода о сбоях Live и замене на ДЕМО: попадают в ответ (нет незаметной подмены).
+        self._turn_notices: list[str] = []
 
     def _now(self) -> datetime:
         return self.clock()
@@ -326,6 +329,7 @@ class Orchestrator:
     def _start_turn(self, session_id: str, request_id: str, trip_id: str) -> None:
         self.registry.start_turn(datetime.now(tz=UTC) + timedelta(seconds=self.limits.turn_deadline_s))
         self.llm.start_turn()
+        self._turn_notices = []
         self.storage.add_event(session_id, "turn_started", {"request_id": request_id})
         self.storage.audit("turn_started", request_id=request_id, trip_id=trip_id, session_id=session_id)
 
@@ -446,7 +450,9 @@ class Orchestrator:
             if answering:
                 assert previous is not None and previous.request is not None
                 value = merge_answer(request_to_form(previous.request), value)
-            return interpret_structured_form(value, session_id=session_id, request_id=request_id)
+            return interpret_structured_form(
+                value, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
 
         if form is not None:
             return interpret(form)
@@ -462,6 +468,10 @@ class Orchestrator:
         """Свободный текст: LLM-Интерпретатор → проверка фрагментов и календарь в коде (план §2.4 шаг 2)."""
         if self.llm.mode == "off":
             return refuse_free_text(session_id=session_id, request_id=request_id)
+        # Минимизация данных (решение 25.10): провайдеру уходит только текущее сообщение без секретов и
+        # лишних персональных данных; в состоянии поездки хранится тоже очищенный текст.
+        redaction = redact(text)
+        text = redaction.text
         reference = datetime.now(tz=UTC)
         known = previous is not None and previous.request is not None
         base = request_to_form(previous.request) if known else StructuredForm()  # type: ignore[union-attr]
@@ -494,7 +504,9 @@ class Orchestrator:
             if known:
                 assert previous is not None and previous.request is not None
                 legacy = merge_answer(request_to_form(previous.request), legacy)
-            outcome = interpret_structured_form(legacy, session_id=session_id, request_id=request_id)
+            outcome = interpret_structured_form(
+                legacy, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
             assert outcome.request is not None
             return InterpretationOutcome(
                 request=outcome.request.evolve(input_mode="free_text_replay"),
@@ -516,6 +528,9 @@ class Orchestrator:
         )
         if mode == "free_text_replay":
             outcome = replace(outcome, notes=[*outcome.notes, *result.uncertainties])
+        notice = redaction.notice()
+        if notice:
+            outcome = replace(outcome, notes=[notice, *outcome.notes])  # уведомление пользователя
         return outcome
 
     @staticmethod
@@ -1386,7 +1401,9 @@ class Orchestrator:
             merged = {**request_to_form(state.request).model_dump(), **requested}
             form = StructuredForm.model_validate(merged)
             self._start_turn(session_id, request_id, trip_id)
-            outcome = interpret_structured_form(form, session_id=session_id, request_id=request_id)
+            outcome = interpret_structured_form(
+                form, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
             return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
 
     def _apply_replan(
@@ -1708,6 +1725,9 @@ class Orchestrator:
                 unchecked(f"источник не ответил: {result.error_code}", STOP_PROVIDER)
             else:
                 collector.checked_sources.append(source)
+        for warning in result.warnings:
+            if ("ДЕМО-вариант" in warning or "недоступен" in warning) and warning not in self._turn_notices:
+                self._turn_notices.append(warning[:300])
         return result
 
     def _component_price(self, state: TripState, component: PlanComponent) -> Price:
@@ -1747,7 +1767,7 @@ class Orchestrator:
             offers_count=len(state.hotel_offers) + len(state.transport_offers),
             unknowns=tuple(plan.unknowns),
             stop_reason=state.search_termination.reason if state.search_termination else None,
-            notes=notes,
+            notes=(*notes, *self._turn_notices[:4]),
             violations=tuple(
                 dict.fromkeys(
                     evaluation.reason

@@ -1,51 +1,57 @@
 # Манифест релиза (`release_manifest`) — ТЗ 0.7 §12, ACCEPT-01 п. 8
 #
-# Коммит релиза — локальный тег git `s6-2026-10-24` (DEC-05; push не выполняется без разрешения).
-# Фактические результаты тестов и метрики — docs/reports/test_report.md и docs/reports/metrics.json.
+# Состояние на 25.10.2026 (срез S7, локальные коммиты; push не выполнялся — DEC-05).
+# Фактические результаты тестов и отчёты — docs/reports/S7_REPORT.md.
 
 schema_version: "1.0.0"
 application: odin-zapros
-version: "0.1.0"
+version: "0.2.0"
 contracts_schema_version: "1.0.0"
-release_kind: "внутренний срез S6 (Mock); не финальная сдача (S7, DEC-32)"
-date: "2026-10-24"
+release_kind: "внутренний срез S7 (LLM + Live-адаптеры); не финальная сдача"
+date: "2026-10-25"
 
 configuration_defaults:
-  ODIN_DATA_MODE: mock
+  ODIN_DATA_MODE: auto        # без ключа LLM — mock (резерв); при настроенной LLM — live (без подмены на Mock)
   ODIN_LLM_MODE: "off"
   ODIN_PORT: 8080
   ODIN_OFFER_TTL_MINUTES: 30
 
 data_modes:
-  mock: enabled
-  replay: "готов маршрутизатор, снимков нет (DEC-24)"
-  live: "BLOCKED: DEC-04, DEC-09, DEC-11"
+  mock: "резервный режим без ключа: только ДЕМО с маркировкой"
+  live: "Tutu MCP, Open-Meteo, OSRM (DEC-09); при сбое — Replay или честное «неизвестно»"
+  mixed: "только по явной настройке: ДЕМО по компоненту с уведомлением в ответе (DEC-23)"
+  replay: "снимки Live-ответов по строгому ключу, локально (DEC-24)"
 
-providers_enabled:
-  - id: odin_mock
-    data_mode: mock
-    note: "синтетические данные «ДЕМО»; см. docs/data_manifest.yaml"
-providers_not_enabled: "все карточки config/provider_registry.yaml — approval_status=proposed (DEC-09)"
+providers_enabled: [tutu_mcp, open_meteo, osrm_demo]
+providers_not_enabled: "nominatim, photon, ourairports, hotelscasa_mcp, met_norway, twogis_public_transport — proposed"
 
-llm: "off (DEC-07); свободный диалог недоступен, используется структурированная форма (DEC-08)"
+llm: >
+  OpenAI-совместимый Chat Completions; включается оператором (ODIN_LLM_MODE=live + ключ, адрес, модель).
+  Передаётся только текущее сообщение без секретов и персональных номеров; тексты не журналируются.
 
 checks:
-  pytest: "все уровни зелёные — см. docs/reports/test_report.md"
+  pytest: "см. docs/reports/S7_REPORT.md"
   ruff: "check и format --check без замечаний"
   schema_snapshot: "python -m odin.contracts.schema_export --check"
   openapi_snapshot: "python -m odin.openapi_snapshot --check"
-  docker_clean_run: "BLOCKED: DEC-06 утверждён в варианте «внешней среды пока нет»"
-  corpus: "K-01..K-30: Mock/Replay — по отчёту; Live — BLOCKED"
+  docker_clean_run: "BLOCKED до журнала запуска в отдельной среде (docs/DOCKER_CHECK.md, DEC-06)"
+
+# Обязательные блокеры финальной сдачи («Правила по технике», DEC-32): без них сдача не выполнена.
+submission_blockers:
+  - id: demo_video
+    status: open
+    requirement: "ссылка на видео-скринкаст в README (доступна в режиме инкогнито)"
+    owner: "руководитель проекта (после записи)"
+  - id: docker_clean_run
+    status: open
+    requirement: "docker compose up --build в отдельной среде, журнал запуска"
+  - id: submission_tag
+    status: open
+    requirement: "git-тег submission на последнем коммите основной ветки в репозитории организации"
 
 known_limitations:
-  - "Live-данные, геокодинг, климатические нормы, 2ГИС не подключены (DEC-09, DEC-12, DEC-13)"
-  - "доступность Mock всегда unknown; стоимость трансфера не оценивается (DEC-18), итог partial"
-  - "стыки по неутверждённым буферам — unknown (DEC-20)"
-  - "TTL офферов 30 мин — provisional (DEC-21); допущения о составе группы запрещены (DEC-25)"
-  - "каталог вдохновения — 5 демо-направлений (DEC-28 открыт)"
+  - "наличие мест и номеров из поисковой выдачи — unknown; детские ж/д тарифы не запрашиваются"
+  - "время трансфера — оценка OSRM без пробок; стоимость трансфера не оценивается (DEC-18)"
+  - "стыки по буферам — unknown (DEC-20); TTL офферов 30 мин — provisional (DEC-21)"
+  - "2ГИС, климатические нормы, OurAirports не подключены (DEC-12, DEC-13)"
   - "юридическая проверка поставки не выполнена (DEC-33, LEGAL-01)"
-
-# Источник — таблица открытых решений docs/decision_log.md на дату манифеста.
-open_decisions: [DEC-04, DEC-07, DEC-09, DEC-10, DEC-11, DEC-12, DEC-13, DEC-14, DEC-15, DEC-16, DEC-17, DEC-18,
-                 DEC-19, DEC-20, DEC-21, DEC-22, DEC-23, DEC-24, DEC-25, DEC-26, DEC-27, DEC-28, DEC-29, DEC-31,
-                 DEC-32, DEC-33, DEC-34, DEC-35, DEC-37]

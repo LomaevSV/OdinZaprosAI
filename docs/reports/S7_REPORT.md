@@ -32,7 +32,7 @@ Tutu: `initialize` 0,38 с, `tools/list` 17 инструментов, `search_ra
 | Пункт | Статус | Причина |
 |---|---|---|
 | Реальный прогон LLM | NOT_RUN | ключ у руководителя (DEC-07); тест `tests/live/test_llm_live_smoke.py` |
-| Сквозной Live-прогон Tutu/Open-Meteo/OSRM | NOT_RUN | квота DEC-11 исчерпана пробой; тест `tests/live/test_tutu_live_smoke.py` (~6 бесплатных запросов) |
+| Сквозной Live-прогон Tutu/Open-Meteo/OSRM | PASS (см. дополнение) | выполнен по разрешению руководителя, 5 запросов данных |
 | Docker в отдельной среде | BLOCKED | DEC-06; инструкция `docs/DOCKER_CHECK.md` |
 | Детали отеля (`get_offer_details`) → `available` | не реализовано | следующий шаг; сейчас наличие `unknown` |
 | 2ГИС, климатические нормы, OurAirports | не подключены | DEC-13 (нет ключа), DEC-12 |
@@ -42,3 +42,23 @@ Tutu: `initialize` 0,38 с, `tools/list` 17 инструментов, `search_ra
 - Тест `test_cart_is_repriced_after_replan` зависел от даты (порядок по каноническому ID при равных классах
   RANK-01 выбирал разный вид транспорта): в тесте зафиксирован вид транспорта. Логика не менялась.
 - В проверке секретов добавлено исключение для UUID в публичной ссылке на правила организаторов.
+
+## Дополнение: решения руководителя 25.10 (второе сообщение)
+| Решение | Реализация | Проверка |
+|---|---|---|
+| Без ключа LLM — резервный `mock`; при настроенной LLM — `live`; незаметная подмена Live на Mock запрещена | `ODIN_DATA_MODE=auto` (по умолчанию); в `live` демо-справочник мест и поясов не используется; сбои Live и замены на ДЕМО (только явный `mixed`) называются в ответе | `test_config_defaults_and_restrictions`, `test_mixed_falls_back_to_marked_mock_and_live_stays_honest` |
+| Передача текстов LLM только при `ODIN_LLM_MODE=live`, без секретов, чужих данных и истории, без логов, с уведомлением | `src/odin/llm/privacy.py`: ключи, e-mail, длинные номера → `[скрыто]` до отправки; только текущее сообщение и краткие условия поездки; `privacy_notice` в сессии и UI, пометка в ответе; в состоянии — очищенный текст | `test_redaction_hides_secrets_and_personal_numbers_but_keeps_trip_facts`, `test_llm_receives_only_redacted_current_message_and_user_is_notified` |
+| Видео — TODO как обязательный блокер сдачи | README, `docs/release_manifest.yaml` (`submission_blockers`), `contest_mapping.md` | `test_submission_blockers_are_tracked_until_resolved` |
+| До 6 бесплатных запросов, только чтение | `tests/live/test_tutu_live_smoke.py` с транспортом-ограничителем (лишний запрос не уходит в сеть) | выполнено, см. ниже |
+
+## Live-прогон T-E2E-LIVE-01 (25.10.2026)
+- Запросы данных: **5 из 6 разрешённых** — геокодинг Open-Meteo ×2, Tutu `search_rail` ×1, Tutu `search_hotels` ×1,
+  OSRM ×1; служебные сообщения MCP: `initialize`, `notifications/initialized`, `tools/list`. Бронирований,
+  оплаты и передачи секретов не было; ответы провайдеров в репозиторий не сохранялись.
+- Итог: **PASS** за 5,3 с. План целиком Live: поезд Москва → Казань, отель, трансфер (оценка OSRM), 9 вариантов
+  транспорта и 10 гостиниц; итог `partial` (наличие и сборы не подтверждены, стоимость трансфера не оценивается);
+  корзина создаётся (201). Остановка — `sources_exhausted`, непроверенных источников нет.
+
+## Итог тестов после дополнения
+`pytest`: **558 passed, 2 skipped** (явные Live-тесты; Live-тест Tutu выполнен отдельно — PASS); Ruff — чисто;
+снимок OpenAPI обновлён (`privacy_notice` в ответе сессии).

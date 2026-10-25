@@ -38,12 +38,13 @@ def _question(field_name: str, question: str, blocking_class: str = "blocking_no
     )
 
 
-def _place(name: str | None) -> Place | None:
+def _place(name: str | None, demo_places: bool = True) -> Place | None:
     if not name:
         return None
-    known = normalize_city(name)
+    known = normalize_city(name) if demo_places else None
     if known is None:
-        # Город вне демо-справочника: честно сохраняем название, координат и пояса не выдумываем.
+        # Город вне демо-справочника или режим Live: название сохраняется, координаты и пояс уточнит
+        # геокодер в оркестраторе — здесь они не выдумываются и не берутся из Mock.
         return Place(name=name.strip(), country_code=None, timezone=None, lat=None, lon=None, source=None)
     return Place(
         name=known.name,
@@ -103,13 +104,14 @@ def interpret_structured_form(
     session_id: str,
     request_id: str,
     reference_datetime: datetime | None = None,
+    demo_places: bool = True,
 ) -> InterpretationOutcome:
     """Строит `TripRequest` из формы. Блокирующие вопросы — только то, без чего нельзя искать."""
     reference = reference_datetime or datetime.now(tz=UTC)
     notes: list[str] = []
 
-    origin = _place(form.origin)
-    destination = _place(form.destination)
+    origin = _place(form.origin, demo_places)
+    destination = _place(form.destination, demo_places)
     decisions = clarify.decide(form)
     questions = [
         _question(decision.field, decision.question or "", decision.blocking_class)

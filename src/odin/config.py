@@ -200,6 +200,8 @@ class Settings:
     app_name: str = "О!дин запрос"
     version: str = "0.1.0"
     data_mode: DataMode = "mock"
+    # True — режим выбран автоматически (ODIN_DATA_MODE=auto): mock без LLM, live при настроенной LLM.
+    data_mode_auto: bool = False
     llm: LlmSettings = field(default_factory=LlmSettings)
     limits: Limits = field(default_factory=Limits)
     db_path: Path = DEFAULT_DB_PATH
@@ -216,7 +218,7 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         source = os.environ if env is None else env
-        data_mode = _mode(source, "ODIN_DATA_MODE", "mock", ("mock", "mixed", "live", "replay"))
+        requested_mode = _mode(source, "ODIN_DATA_MODE", "auto", ("auto", "mock", "mixed", "live", "replay"))
         llm_mode = _mode(source, "ODIN_LLM_MODE", "off", ("off", "replay", "live"))
         llm = LlmSettings(
             mode=llm_mode,  # type: ignore[arg-type]
@@ -256,8 +258,14 @@ class Settings:
             top_k=_int(source, "ODIN_TOP_K", 3, minimum=1),
             offer_ttl_minutes=_int(source, "ODIN_OFFER_TTL_MINUTES", 30, minimum=1),
         )
+        # Решение руководителя 25.10: без ключа LLM — резервный mock; при настроенной LLM — строгий live
+        # (без незаметной подмены Live на Mock). Явное значение ODIN_DATA_MODE имеет приоритет.
+        data_mode = requested_mode
+        if requested_mode == "auto":
+            data_mode = "live" if llm.live_enabled else "mock"
         return cls(
             data_mode=data_mode,  # type: ignore[arg-type]
+            data_mode_auto=requested_mode == "auto",
             llm=llm,
             limits=limits,
             db_path=Path(source.get("ODIN_DB_PATH") or DEFAULT_DB_PATH),

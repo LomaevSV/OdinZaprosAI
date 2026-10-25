@@ -101,8 +101,20 @@ def test_session_lock_serializes_turns(storage: Storage) -> None:
 def test_config_defaults_and_restrictions() -> None:
     settings = Settings.from_env({})
     assert settings.data_mode == "mock" and settings.llm.mode == "off" and settings.port == 8080
-    for mode in ("mixed", "live", "replay"):
-        assert Settings.from_env({"ODIN_DATA_MODE": mode}).data_mode == mode
+    assert settings.data_mode_auto is True  # auto: без ключа LLM — резервный mock
+    for mode in ("mock", "mixed", "live", "replay"):
+        explicit = Settings.from_env({"ODIN_DATA_MODE": mode})
+        assert explicit.data_mode == mode and explicit.data_mode_auto is False
+    configured = Settings.from_env(
+        {
+            "ODIN_LLM_MODE": "live",
+            "ODIN_LLM_BASE_URL": "https://llm.example.test/v1",
+            "ODIN_LLM_MODEL": "m",
+            "ODIN_LLM_API_KEY": "k",
+        }
+    )
+    assert configured.data_mode == "live"  # при настроенной LLM — строгий live, без подмены на Mock
+    assert Settings.from_env({"ODIN_LLM_API_KEY": "k"}).data_mode == "mock"  # ключ без режима live — mock
     with pytest.raises(ConfigError):
         Settings.from_env({"ODIN_DATA_MODE": "demo"})
     with pytest.raises(ConfigError):

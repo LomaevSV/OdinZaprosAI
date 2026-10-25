@@ -212,9 +212,9 @@ async function ensureSession() {
   $("mode-badge").textContent = `Данные: ${dataMode === "mixed" ? "Live (при сбое — ДЕМО)" : MODE_LABELS[dataMode] || dataMode}`;
   $("mode-badge").className = `badge badge-${dataMode === "mock" ? "mock" : "live"}`;
   if (state.session.llm_mode === "live") {
-    $("llm-notice").textContent =
+    $("llm-notice").textContent = state.session.privacy_notice ||
       "LLM подключён: опишите поездку своими словами. Цены, даты и условия проверяет код, а не модель.";
-    $("text-label").textContent = "Опишите поездку или изменение условий";
+    $("text-label").textContent = "Опишите поездку или изменение условий (текст уйдёт LLM-провайдеру)";
   } else if (state.session.llm_mode === "replay") {
     $("llm-notice").textContent = "LLM в режиме Replay: понимаются только заранее записанные фразы.";
   }

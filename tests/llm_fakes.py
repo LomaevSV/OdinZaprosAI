@@ -76,6 +76,8 @@ class ScriptedLlm:
 
 
 LIVE_ENV = {
+    # Данные — Mock: тесты LLM-конвейера не ходят в сеть (иначе auto выбрал бы live).
+    "ODIN_DATA_MODE": "mock",
     "ODIN_LLM_MODE": "live",
     "ODIN_LLM_BASE_URL": "https://llm.example.test/v1",
     "ODIN_LLM_MODEL": "fake-model",

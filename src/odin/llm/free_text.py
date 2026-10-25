@@ -332,11 +332,8 @@ def _transport_modes(value: TransportValue) -> list[str]:
 
 
 def _timezone_for(values: dict[str, Any], resolver: Callable[[str], str | None] | None = None) -> str | None:
-    """Часовой пояс для календаря: демо-справочник, затем (в Live) геокодинг через оркестратор."""
-    for key in ("origin", "destination"):
-        place = normalize_city(values.get(key))
-        if place is not None:
-            return place.timezone
+    """Часовой пояс для календаря. В Live — только геокодинг через оркестратор (без демо-справочника,
+    решение 25.10: нет незаметной подмены Live на Mock); в Mock — демо-справочник."""
     if resolver is not None:
         for key in ("origin", "destination"):
             name = values.get(key)
@@ -344,6 +341,11 @@ def _timezone_for(values: dict[str, Any], resolver: Callable[[str], str | None] 
                 zone = resolver(str(name))
                 if zone:
                     return zone
+        return None
+    for key in ("origin", "destination"):
+        place = normalize_city(values.get(key))
+        if place is not None:
+            return place.timezone
     return None
 
 
@@ -444,7 +446,11 @@ def outcome_from_delta(
         delta, text=text, base=base, reference_datetime=reference_datetime, timezone_for=timezone_for
     )
     outcome = interpret_structured_form(
-        form, session_id=session_id, request_id=request_id, reference_datetime=reference_datetime
+        form,
+        session_id=session_id,
+        request_id=request_id,
+        reference_datetime=reference_datetime,
+        demo_places=timezone_for is None,
     )
     assert outcome.request is not None
     # Вопросы календаря заменяют общий вопрос о датах (точнее и со ссылкой на фразу).

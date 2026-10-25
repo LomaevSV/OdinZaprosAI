@@ -3535,6 +3535,17 @@
           },
           "state": {
             "$ref": "#/components/schemas/TripState"
+          },
+          "privacy_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Privacy Notice"
           }
         },
         "additionalProperties": false,

@@ -200,3 +200,27 @@ def test_injection_in_user_text_cannot_trigger_purchase(live_client: Any) -> Non
     turn = _say(live_client, session, text, session["trip_revision"], 40)
     assert turn["status"] == "planned" and turn["state"]["cart"] is None
     assert live_client.get(f"/api/v1/trips/{turn['trip_id']}").json()["status"] == "planned"
+
+
+@pytest.mark.req("SECURITY-01", "DEC-07")
+def test_llm_receives_only_redacted_current_message_and_user_is_notified(
+    live_client: Any, fake: ScriptedLlm, caplog: pytest.LogCaptureFixture
+) -> None:
+    phone = "+7 912 345-67-89"
+    text = f"{FULL}, мой телефон {phone}"
+    redacted = f"{FULL}, мой телефон [скрыто]"
+    fake.interpreter[redacted] = FULL_DELTA  # type: ignore[index]
+    session = live_client.post("/api/v1/sessions").json()
+    assert session["privacy_notice"] and "без истории переписки" in session["privacy_notice"]
+    with caplog.at_level("DEBUG"):
+        turn = _say(live_client, session, text, session["trip_revision"], 50)
+    assert turn["status"] == "planned" and turn["input_mode"] == "free_text_llm"
+    sent = json.dumps(fake.requests, ensure_ascii=False)
+    assert phone not in sent and "[скрыто]" in sent
+    assert turn["state"]["request"]["raw_text"] == redacted  # в состоянии — очищенный текст
+    assert "Перед передачей LLM из сообщения скрыто" in turn["assistant_text"]
+    assert phone not in caplog.text and FULL not in caplog.text  # тексты не попадают в журналы
+    second = _say(live_client, session, SWITCH, turn["trip_revision"], 51)
+    interpreter_calls = [request for request in fake.requests if "«Интерпретатор»" in request[0]["content"]]
+    last_user = interpreter_calls[-1][-1]["content"]
+    assert second["status"] == "planned" and FULL not in last_user  # без истории: только текущее сообщение

@@ -387,6 +387,8 @@ def create_app(settings: Settings | None = None, *, application: Application | N
 def _session_response(session: dict[str, Any], state: TripState) -> SessionResponse:
     from datetime import datetime
 
+    from odin.llm.privacy import PRIVACY_NOTICE
+
     return SessionResponse(
         session_id=session["session_id"],
         trip_id=session["trip_id"],
@@ -395,6 +397,7 @@ def _session_response(session: dict[str, Any], state: TripState) -> SessionRespo
         llm_mode=session["llm_mode"],
         data_mode=session["data_mode"],
         state=state,
+        privacy_notice=PRIVACY_NOTICE if session["llm_mode"] == "live" else None,
     )
 
 

@@ -72,6 +72,8 @@ class SessionResponse(Contract):
     llm_mode: str
     data_mode: str
     state: TripState
+    # Уведомление о передаче текстов LLM-провайдеру (только при llm_mode=live).
+    privacy_notice: str | None = None
 
 
 class TurnResponse(Contract):

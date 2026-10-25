@@ -9,7 +9,7 @@
 
 | Положение задания (по ТЗ 0.7) | Источник в ТЗ | Модуль / артефакт | Тест / доказательство | Статус (S6) |
 |---|---|---|---|---|
-| Прототип AI-турагента: вдохновение → направление → размещение, транспорт, трансфер → сравнение → план и корзина → имитация покупки → пересборка | GOAL-01 [ORG-2026] | оркестратор, домены, ядро, корзина, пересборка, UI | T-E2E-MOCK-01..03, T-E2E-MOCK-10..14, K-01, K-22..K-26 — PASS (Mock); T-E2E-LIVE-01/02 | Mock — PASS; Live — адаптеры PASS на фикстурах, сквозной Live-прогон — явный тест `tests/live` (NOT_RUN) |
+| Прототип AI-турагента: вдохновение → направление → размещение, транспорт, трансфер → сравнение → план и корзина → имитация покупки → пересборка | GOAL-01 [ORG-2026] | оркестратор, домены, ядро, корзина, пересборка, UI | T-E2E-MOCK-01..03, T-E2E-MOCK-10..14, K-01, K-22..K-26 — PASS (Mock); T-E2E-LIVE-01/02 | Mock — PASS; Live — адаптеры PASS на фикстурах, сквозной Live-прогон T-E2E-LIVE-01 — PASS 25.10 (5 запросов, `docs/reports/S7_REPORT.md`) |
 | Уточняющие вопросы без длинной анкеты | GOAL-01 [ORG-2026], UC-02 | `core/clarify.py` | K-05..K-07, T-UNIT-CLARIFY-01..03 — PASS (форма); свободный диалог | форма — PASS; конвейер LLM-диалога — PASS на двойнике (`tests/e2e/test_llm_dialog.py`); реальная модель — ждёт ключа (DEC-07) |
 | Заранее неизвестные запросы на защите | GOAL-01 [ORG-2026], UC-10 | оркестратор, матрица UC-10 | K-30, `tests/e2e/test_uc10_matrix.py` — PASS (Mock) | Mock — PASS; Live — BLOCKED |
 | Пересборка без потери условий; отрицательные случаи по датам, бюджету, животному | ACCEPT-01 п. 3, UC-09 | менеджер пересборки, REPLAN-01 | K-22..K-25, T-E2E-MOCK-10..14 — PASS (Mock) | Mock — PASS; на LLM-диалоге — BLOCKED (DEC-07) |
@@ -28,7 +28,7 @@
 | Правило | Где выполнено | Проверка | Статус |
 |---|---|---|---|
 | Обязательные файлы `README.md`, `docker-compose.yml`, `Dockerfile`, `.env.example` | корень репозитория | `test_docker_files_follow_organizer_rules` | PASS (структурно) |
-| README: описание, видео, быстрый старт до `localhost:8080`, ресурсы, переменные с умолчаниями, сидирование, маршруты `/`, `/health` | `README.md` | `test_readme_explains_start_checks_and_demo_limits` | PASS; ссылка на видео — TODO |
+| README: описание, видео, быстрый старт до `localhost:8080`, ресурсы, переменные с умолчаниями, сидирование, маршруты `/`, `/health` | `README.md` | `test_readme_explains_start_checks_and_demo_limits`, `test_submission_blockers_are_tracked_until_resolved` | PASS; ссылка на видео — **обязательный блокер финальной сдачи** (TODO) |
 | Контейнер слушает 8080, Compose `8080:8080` | `Dockerfile`, `docker-compose.yml` | тест поставки; локальный запуск 25.10: `/health` 200, `/` 200 | PASS локально; Docker — BLOCKED |
 | Multi-stage, без dev-инструментов в рантайме, не root | `Dockerfile` (builder/runtime, `USER odin`) | тест поставки | PASS (структурно) |
 | Секреты только в `.env`/env_file | `.env.example` без значений секретов, `.env` в `.gitignore` | T-DLV-SECRETS-01 | PASS |
@@ -41,4 +41,5 @@
 | Модели — через OpenAI-совместимое API | `src/odin/llm/openai_client.py` | `tests/unit/test_llm_live.py` | PASS (на двойнике); Live — ключ у руководителя |
 | Без ручных доустановок | только Docker/Compose и копирование `.env` | — | готово |
 | Рекомендовано: Makefile, CI | `Makefile`, `.github/workflows/ci.yml` | — | готово |
-| Тег `submission`, репозиторий организации, видео | — | — | вне разработки (руководитель) |
+| Демо-видео (обязательно) | `README.md`, `docs/release_manifest.yaml` (`submission_blockers`) | тест поставки | **BLOCKER**: ссылка после записи |
+| Тег `submission`, репозиторий организации | — | — | вне разработки (руководитель) |

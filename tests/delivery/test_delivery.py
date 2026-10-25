@@ -72,8 +72,8 @@ def test_env_example_lists_all_variables_without_values_for_secrets() -> None:
     pairs = dict(line.split("=", 1) for line in lines if line and not line.startswith("#"))
     assert set(pairs) == set(ENV_VARS)
     assert pairs["ODIN_LLM_API_KEY"] == ""
-    # mixed: Live утверждённых провайдеров без ключей, при сбое — маркированный ДЕМО (DEC-23); LLM выключен.
-    assert pairs["ODIN_DATA_MODE"] in ("mock", "mixed") and pairs["ODIN_LLM_MODE"] == "off"
+    # auto: без ключа LLM — резервный mock, при настроенной LLM — live (решение руководителя 25.10).
+    assert pairs["ODIN_DATA_MODE"] == "auto" and pairs["ODIN_LLM_MODE"] == "off"
     assert pairs["ODIN_PORT"] == "8080"
 
 
@@ -125,7 +125,7 @@ def test_docker_files_follow_organizer_rules() -> None:
     runtime = dockerfile.split("AS runtime", 1)[1]
     assert "uv sync" not in runtime and "/usr/local/bin/uv" not in runtime  # без dev-инструментов
     assert "USER odin" in runtime and "HEALTHCHECK" in runtime and "EXPOSE 8080" in runtime
-    assert "ODIN_DATA_MODE=mock" in dockerfile and "ODIN_LLM_MODE=off" in dockerfile
+    assert "ODIN_DATA_MODE=auto" in dockerfile and "ODIN_LLM_MODE=off" in dockerfile
     assert ":latest" not in dockerfile
     assert not (ROOT / "compose.yaml").exists()
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -192,3 +192,16 @@ def test_text_files_are_utf8_lf_without_bom() -> None:
         if raw.startswith(b"\xef\xbb\xbf") or b"\r\n" in raw:
             offenders.append(path.relative_to(ROOT).as_posix())
     assert offenders == []
+
+
+@pytest.mark.req("DEC-32", "DELIVERY-01")
+def test_submission_blockers_are_tracked_until_resolved() -> None:
+    """Видео обязательно по правилам: пока ссылки нет, это открытый блокер, а не забытый пункт."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    manifest = yaml.safe_load((ROOT / "docs" / "release_manifest.yaml").read_text(encoding="utf-8"))
+    blockers = {item["id"]: item for item in manifest["submission_blockers"]}
+    video_line = next(line for line in readme.splitlines() if "Видео-скринкаст" in line)
+    if "TODO" in video_line:
+        assert "БЛОКЕР ФИНАЛЬНОЙ СДАЧИ" in video_line and blockers["demo_video"]["status"] == "open"
+    else:
+        assert re.search(r"https?://\S+", video_line), "ссылка на видео должна быть URL"
