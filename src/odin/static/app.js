@@ -62,6 +62,24 @@ function money(price) {
 
 const COMPLETENESS = { complete: "полная", partial: "неполная (известна часть)", unknown: "неизвестна" };
 const STATUS = { matched: "выполнено", violated: "нарушено", unknown: "не подтверждено", not_applicable: "не применимо" };
+const AVAILABILITY = { available: "есть по данным поставщика на момент запроса", unavailable: "нет по данным поставщика", unknown: "не подтверждено" };
+const EVIDENCE = { search_listing: "поисковая выдача", offer_details: "детали предложения", provider_checked: "проверено у поставщика", historical: "исторические данные", mock: "ДЕМО", none: "нет данных" };
+const STOP_REASONS = {
+  sufficient_results: "найдено достаточно вариантов",
+  sources_exhausted: "опрошены все подключённые источники",
+  limits_exhausted: "исчерпан лимит запросов на ход",
+  deadline: "истекло время на ход",
+  provider_unavailable: "источник данных недоступен",
+  user_stopped: "остановлен пользователем",
+  blocked_by_decision: "источник не разрешён к использованию",
+};
+const FIELD_LABELS = { budget_total: "бюджет", transport_mode: "вид транспорта", pets: "животные", hotel_breakfast: "завтрак", hotel_stars_min: "звёздность", hotel_free_cancellation: "бесплатная отмена" };
+const ROLE_LABELS = { outbound: "туда", return: "обратно", hotel: "гостиница", transfer_in: "трансфер к гостинице", transfer_out: "трансфер от гостиницы" };
+
+function availabilityText(availability) {
+  const label = AVAILABILITY[availability.availability_status] || availability.availability_status;
+  return `Наличие: ${label} (${EVIDENCE[availability.evidence_level] || availability.evidence_level})`;
+}
 
 function asOf(source) {
   const moment = source && (source.retrieved_at || source.generated_at);
@@ -104,12 +122,12 @@ function renderTrip(trip) {
     if (plan.unknowns.length) summary.append(el("p", { class: "meta" }, "Не подтверждено: " + plan.unknowns.join("; ")));
     for (const check of plan.connection_checks) {
       summary.append(el("p", { class: `status-${check.status}`, "data-testid": "connection-check" },
-        `Стык ${check.from_component} → ${check.to_component}: ${STATUS[check.status]} (${check.basis})`));
+        `Стык ${ROLE_LABELS[check.from_component] || check.from_component} → ${ROLE_LABELS[check.to_component] || check.to_component}: ${STATUS[check.status]} (${check.basis})`));
     }
   }
   if (trip.search_termination) {
     summary.append(el("p", { class: "meta", "data-testid": "stop-reason" },
-      `Поиск: ${trip.search_termination.reason}. Это не означает, что вариантов нет.`));
+      `Поиск: ${STOP_REASONS[trip.search_termination.reason] || trip.search_termination.reason}. Это не означает, что вариантов нет.`));
   }
 
   const cards = $("cards");
@@ -117,14 +135,14 @@ function renderTrip(trip) {
   const hotels = Object.fromEntries((trip.hotels || []).map((hotel) => [hotel.hotel_id, hotel]));
   const chosen = new Set((plan ? plan.components : []).map((component) => component.offer_id));
   for (const offer of trip.transport_offers || []) {
-    const node = card(offer.title, `${offer.direction === "outbound" ? "Туда" : "Обратно"}: ${new Date(offer.departure_at).toLocaleString("ru-RU")} → ${new Date(offer.arrival_at).toLocaleString("ru-RU")}`, offer.price, offer.source, offer.source.data_mode, [`Наличие: ${offer.availability.availability_status}`]);
+    const node = card(offer.title, `${offer.direction === "outbound" ? "Туда" : "Обратно"}: ${new Date(offer.departure_at).toLocaleString("ru-RU")} → ${new Date(offer.arrival_at).toLocaleString("ru-RU")}`, offer.price, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
     if (chosen.has(offer.offer_id)) node.classList.add("selected");
     cards.append(node);
   }
   for (const offer of trip.hotel_offers || []) {
     const hotel = hotels[offer.hotel_id] || {};
     const stars = hotel.star_rating == null ? "категория не указана" : `${hotel.star_rating}★`;
-    const node = card(hotel.name || offer.hotel_id, `${stars}; завтрак: ${offer.terms.breakfast_included == null ? "не подтверждён" : offer.terms.breakfast_included ? "да" : "нет"}`, offer.price_total, offer.source, offer.source.data_mode, [`Наличие: ${offer.availability.availability_status} (${offer.availability.unknown_reason || offer.availability.evidence_level})`]);
+    const node = card(hotel.name || offer.hotel_id, `${stars}; завтрак: ${offer.terms.breakfast_included == null ? "не подтверждён" : offer.terms.breakfast_included ? "да" : "нет"}`, offer.price_total, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
     if (chosen.has(offer.offer_id)) node.classList.add("selected");
     cards.append(node);
   }
@@ -135,13 +153,19 @@ function renderTrip(trip) {
     cards.append(el("div", { class: "card", "data-testid": "destination-card" },
       el("div", {}, el("strong", {}, candidate.place.name), " ", modeBadge(candidate.source.data_mode)),
       el("div", {}, candidate.description),
-      el("div", { class: "meta" }, `${candidate.cost_note}; климат: ${candidate.climate_status}; визы: не проверено`)));
+      el("div", { class: "meta" }, `${candidate.cost_note}; климат: ${{ not_loaded: "нормы не загружены", norm: "климатическая норма", unknown: "неизвестно" }[candidate.climate_status] || candidate.climate_status}; визы: не проверено`)));
   }
 
   const constraints = $("constraints");
   constraints.replaceChildren();
+  const byId = Object.fromEntries(((trip.request && trip.request.constraints) || []).map((c) => [c.constraint_id, c]));
+  const roleByOffer = Object.fromEntries((plan ? plan.components : []).map((c) => [c.offer_id, c.role]));
   for (const evaluation of trip.constraint_evaluations || []) {
-    constraints.append(el("li", { class: `status-${evaluation.status}` }, `${evaluation.constraint_id}: ${STATUS[evaluation.status]} — ${evaluation.reason}`));
+    if (evaluation.status === "not_applicable") continue;
+    const constraint = byId[evaluation.constraint_id];
+    const label = constraint ? (FIELD_LABELS[constraint.field] || constraint.field) + (constraint.requiredness === "required" ? " (обязательно)" : "") : evaluation.constraint_id;
+    const role = ROLE_LABELS[roleByOffer[evaluation.component_id] || evaluation.component_id];
+    constraints.append(el("li", { class: `status-${evaluation.status}` }, `${label}${role ? ", " + role : ""}: ${STATUS[evaluation.status]} — ${evaluation.reason}`));
   }
   $("cart-btn").disabled = !(plan && plan.components.length) || trip.status === "purchased_demo";
 }

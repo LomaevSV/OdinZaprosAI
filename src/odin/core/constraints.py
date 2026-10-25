@@ -87,6 +87,9 @@ def _check_budget(constraint: Constraint, facts: OfferFacts) -> ConstraintEvalua
     return _result(constraint, facts, status, reason, unknown_reason=unknown_reason, deviation=deviation)
 
 
+_MODE_NAMES = {"rail": "поезд", "flight": "самолёт"}
+
+
 def _check_transport_mode(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluation:
     wanted = [
         str(item) for item in (constraint.value if isinstance(constraint.value, list) else [constraint.value])
@@ -94,11 +97,10 @@ def _check_transport_mode(constraint: Constraint, facts: OfferFacts) -> Constrai
     if facts.transport_mode is None:
         return _result(constraint, facts, "unknown", "вид транспорта не указан источником")
     inside = facts.transport_mode in wanted
+    name = _MODE_NAMES.get(facts.transport_mode, facts.transport_mode)
     if (constraint.operator == "in") == inside:
-        return _result(constraint, facts, "matched", f"вид транспорта {facts.transport_mode} допустим")
-    return _result(
-        constraint, facts, "violated", f"вид транспорта {facts.transport_mode} не допустим условием"
-    )
+        return _result(constraint, facts, "matched", f"вид транспорта «{name}» допустим")
+    return _result(constraint, facts, "violated", f"вид транспорта «{name}» не допустим условием")
 
 
 def _check_pets(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluation:
