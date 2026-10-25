@@ -29,6 +29,7 @@ LOGICAL_TOOLS = (
 LIVE_ROUTES: dict[str, str] = {
     "search_transport": "tutu_mcp",
     "search_hotels": "tutu_mcp",
+    "get_offer_details": "tutu_mcp",
     "geocode": "open_meteo",
     "get_transfer_options": "osrm_demo",
     "suggest_destinations": "odin_mock",

@@ -804,7 +804,9 @@ class Orchestrator:
                 )
         collector.candidates_seen = len(collector.transport) + len(collector.hotel_offers)
 
-        # Волна 2: трансфер для выбранного направления.
+        # Волна 2: детали лучших K гостиниц (только Live) и трансфер для выбранного направления.
+        if self.live_data and collector.hotel_offers:
+            self._hotel_details(request, collector)
         if collector.hotel_offers:
             transfer_arguments: dict[str, Any] = {
                 "city": destination.name,
@@ -820,6 +822,89 @@ class Orchestrator:
             if transfer_result is not None and isinstance(transfer_result.data, dict):
                 collector.transfers = list(transfer_result.data.get("offers") or [])
         return self._finish_search(state, collector, request)
+
+    @staticmethod
+    def _hotel_facts(offer: Any, hotel: Any) -> OfferFacts:
+        return OfferFacts(
+            component_id=offer.offer_id,
+            role="hotel",
+            total_amount=offer.price_total.amount,
+            currency=offer.currency,
+            price_completeness=offer.price_total.total_completeness,
+            pets_allowed=hotel.pets_allowed if hotel else None,
+            breakfast_included=offer.terms.breakfast_included,
+            star_rating=hotel.star_rating if hotel else None,
+            free_cancellation=offer.terms.free_cancellation,
+            evidence=(f"{offer.source.provider}:{offer.source.tool}",),
+        )
+
+    def _hotel_details(self, request: TripRequest, collector: _Collector) -> None:
+        """Волна 2 (план §2.4 п. 7): детали лучших K гостиниц — тарифы и наличие на даты по данным поставщика.
+
+        Детали заменяют поисковые записи этих гостиниц; гостиница, о которой поставщик сообщил «нет номеров
+        на даты», исключается из кандидатов с пометкой. Сбой деталей не ломает план: остаётся выдача поиска.
+        """
+        date_range = request.date_range
+        live_offers = [offer for offer in collector.hotel_offers if offer.source.data_mode == "live"]
+        if date_range is None or not live_offers:
+            return
+        hotel_by_id = {hotel.hotel_id: hotel for hotel in collector.hotels}
+        required_ids = [c.constraint_id for c in request.constraints if c.requiredness == "required"]
+        keys = {
+            offer.offer_id: rank_key(
+                offer.offer_id,
+                aggregate_statuses(
+                    evaluate_constraints(
+                        request.constraints, self._hotel_facts(offer, hotel_by_id.get(offer.hotel_id))
+                    )
+                ),
+                required_ids,
+            )
+            for offer in live_offers
+        }
+        by_id = {offer.offer_id: offer for offer in live_offers}
+        top: list[str] = []
+        for key in sort_by_rank(keys.values()):
+            hotel_id = by_id[key.canonical_id].hotel_id
+            if hotel_id in hotel_by_id and hotel_id not in top:
+                top.append(hotel_id)
+            if len(top) >= self.limits.top_k:
+                break
+        if not top:
+            return
+        result = self._invoke(
+            self._tool_request(
+                request_id=request.request_id,
+                tool="get_offer_details",
+                arguments={
+                    "hotels": [hotel_by_id[hotel_id].model_dump(mode="json") for hotel_id in top],
+                    "check_in": date_range.start.isoformat(),
+                    "check_out": date_range.end.isoformat(),
+                    "adults": request.party.adults or 0,
+                    "children_ages": list(request.party.children_ages),
+                    "ttl_minutes": self.limits.offer_ttl_minutes,
+                },
+            ),
+            collector,
+        )
+        if (
+            result is None
+            or result.status not in ("ok", "partial", "empty")
+            or not isinstance(result.data, dict)
+        ):
+            return
+        detailed = list(result.data.get("offers") or [])
+        refined = {hotel.hotel_id: hotel for hotel in result.data.get("hotels") or []}
+        unavailable = set(result.data.get("unavailable_hotel_ids") or [])
+        replaced = {offer.hotel_id for offer in detailed} | unavailable
+        kept = [offer for offer in collector.hotel_offers if offer.hotel_id not in replaced]
+        collector.hotel_offers = [*detailed, *kept]
+        collector.hotels = [refined.get(hotel.hotel_id, hotel) for hotel in collector.hotels]
+        for hotel_id in sorted(unavailable):
+            name = hotel_by_id[hotel_id].name if hotel_id in hotel_by_id else hotel_id
+            notice = f"«{name}»: на эти даты у поставщика нет номеров (по деталям Tutu) — вариант исключён"
+            if notice not in self._turn_notices:
+                self._turn_notices.append(notice)
 
     @staticmethod
     def _transfer_points(collector: _Collector) -> dict[str, Any]:
@@ -948,18 +1033,7 @@ class Orchestrator:
 
         for offer in state.hotel_offers:
             hotel = hotel_by_id.get(offer.hotel_id)
-            facts = OfferFacts(
-                component_id=offer.offer_id,
-                role="hotel",
-                total_amount=offer.price_total.amount,
-                currency=offer.currency,
-                price_completeness=offer.price_total.total_completeness,
-                pets_allowed=hotel.pets_allowed if hotel else None,
-                breakfast_included=offer.terms.breakfast_included,
-                star_rating=hotel.star_rating if hotel else None,
-                free_cancellation=offer.terms.free_cancellation,
-                evidence=(f"{offer.source.provider}:{offer.source.tool}",),
-            )
+            facts = self._hotel_facts(offer, hotel)
             candidates.setdefault("hotel", []).append(
                 (offer.offer_id, offer, evaluate_constraints(request.constraints, facts))
             )

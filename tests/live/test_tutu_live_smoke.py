@@ -4,8 +4,10 @@
 Разрешение руководителя 25.10 (DEC-11): не более 6 бесплатных запросов данных, только чтение, без
 бронирований, оплаты и передачи секретов. Ограничение обеспечивает транспорт-счётчик: седьмой запрос данных
 не уходит в сеть. Сценарий: Москва → Казань в одну сторону, 2 взрослых, поезд — геокодинг ×2,
-``search_rail`` ×1, ``search_hotels`` ×1, матрица OSRM ×1 = 5 запросов данных. Служебные сообщения
-MCP (``initialize``, ``notifications/initialized``, ``tools/list``) данных не запрашивают и считаются отдельно.
+``search_rail`` ×1, ``search_hotels`` ×1, ``get_offer_details`` ×1 (``ODIN_TOP_K=1``), матрица OSRM ×1 =
+6 запросов данных. Служебные сообщения
+MCP (``initialize``, `
+otifications/initialized``, ``tools/list``) данных не запрашивают и считаются отдельно.
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ def test_live_moscow_kazan_plan_has_live_components(tmp_path: Path) -> None:
             "ODIN_DATA_MODE": "live",
             "ODIN_LLM_MODE": "off",
             "ODIN_TOOL_RETRIES": "0",
+            "ODIN_TOP_K": "1",  # детали одной гостиницы: всего 6 запросов данных
             "ODIN_DB_PATH": str(tmp_path / "live.sqlite3"),
             "ODIN_REPLAY_DIR": str(tmp_path / "replay"),
         }

@@ -316,12 +316,27 @@ def test_live_plan_then_offline_replay_reproduces_it(make_client: Any) -> None:
     assert turn["state"]["request"]["destination"]["timezone"] == "Europe/Moscow"
     assert turn["state"]["request"]["destination"]["source"]["provider"] == "open_meteo"
     called = [name for name, _ in tutu.calls]
-    assert sorted(called) == ["search_hotels", "search_rail", "search_rail"]
+    assert sorted(called) == ["get_offer_details"] * 3 + ["search_hotels", "search_rail", "search_rail"]
     rail_args = next(args for name, args in tutu.calls if name == "search_rail")
     assert rail_args["passengers"] == 2 and rail_args["departure_date"] in (
         TRIP_START.isoformat(),
         TRIP_END.isoformat(),
     )
+    # Волна 2: детали лучших K — наличие по данным поставщика, тариф с завтраком отдельно, время заезда.
+    state = turn["state"]
+    detailed = [offer for offer in state["hotel_offers"] if offer["offer_id"].startswith("TUTU-HD-900000-")]
+    assert len(detailed) == 2 and {offer["terms"]["breakfast_included"] for offer in detailed} == {
+        True,
+        False,
+    }
+    assert all(offer["availability"]["availability_status"] == "available" for offer in detailed)
+    assert all(offer["availability"]["evidence_level"] == "offer_details" for offer in detailed)
+    assert not any(offer["hotel_id"] == "TUTU-H-900001" for offer in state["hotel_offers"])  # нет номеров
+    assert "нет номеров" in turn["assistant_text"]
+    hotel = next(item for item in state["hotels"] if item["hotel_id"] == "TUTU-H-900000")
+    assert hotel["check_in_from"] == "14:00:00"
+    if roles["hotel"]["offer_id"].startswith("TUTU-HD-"):
+        assert "наличие (hotel) не подтверждено источником" not in plan["unknowns"]
     health = live.get("/health").json()
     enabled = {item["provider_id"] for item in health["providers"] if item["live_enabled"]}
     assert enabled == {"tutu_mcp", "open_meteo", "osrm_demo"}
@@ -366,3 +381,58 @@ def test_unknown_city_in_live_is_reported_not_invented(make_client: Any) -> None
     termination = turn["state"]["search_termination"]
     assert termination["reason"] == "provider_unavailable"
     assert "геокодер" in termination["unchecked_sources"][0]["reason"]
+
+
+@pytest.mark.req("AVAIL-01", "DEC-15", "T-ADP-TUTU-04")
+def test_hotel_details_confirm_availability_only_live_and_for_requested_stay() -> None:
+    from odin.tools.tutu import normalize_hotel_details
+    from tests.live_fixtures import details_payload
+
+    check_in, check_out = date(2026, 11, 24), date(2026, 11, 26)
+    hotels, _, _ = normalize_hotels(
+        hotels_payload(check_in, check_out),
+        city=KAZAN,
+        check_in=check_in,
+        check_out=check_out,
+        adults=2,
+        children_ages=[],
+        request_parameters={},
+        data_mode="live",
+        retrieved_at=NOW,
+        ttl_minutes=30,
+    )
+    common = {
+        "check_in": check_in,
+        "check_out": check_out,
+        "adults": 2,
+        "children_ages": [],
+        "request_parameters": {},
+        "retrieved_at": NOW,
+        "ttl_minutes": 30,
+    }
+    hotel, offers, notes, status = normalize_hotel_details(
+        details_payload("900000", check_in, check_out, 2), hotel=hotels[0], data_mode="live", **common
+    )
+    assert status == "available" and notes == [] and len(offers) == 2  # тариф «за ночь» отброшен
+    cheapest, breakfast = offers
+    assert str(cheapest.price_total.amount) == "8400.00" and cheapest.terms.breakfast_included is False
+    assert breakfast.terms.breakfast_included is True and breakfast.terms.free_cancellation_until is not None
+    assert cheapest.availability.availability_status == "available"
+    assert (
+        cheapest.availability.evidence_level == "offer_details"
+        and cheapest.price_total.total_completeness == "partial"
+    )
+    assert str(hotel.check_in_from) == "14:00:00" and hotel.location.address.startswith("Россия")
+    _, none, notes, status = normalize_hotel_details(
+        details_payload("900001", check_in, check_out, 2), hotel=hotels[1], data_mode="live", **common
+    )
+    assert none == [] and status == "unavailable" and "нет номеров" in notes[0]
+    assert "забронируй" not in " ".join(notes)  # подсказка сервера — данные, а не команда
+    _, replayed, _, _ = normalize_hotel_details(
+        details_payload("900000", check_in, check_out, 2), hotel=hotels[0], data_mode="replay", **common
+    )
+    assert all(offer.availability.availability_status == "unknown" for offer in replayed)
+    _, other, notes, status = normalize_hotel_details(
+        details_payload("900000", check_in, check_out, 3), hotel=hotels[0], data_mode="live", **common
+    )
+    assert other == [] and status == "unknown" and "состав" in notes[0]

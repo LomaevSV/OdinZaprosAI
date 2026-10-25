@@ -34,7 +34,7 @@ Tutu: `initialize` 0,38 с, `tools/list` 17 инструментов, `search_ra
 | Реальный прогон LLM | NOT_RUN | ключ у руководителя (DEC-07); тест `tests/live/test_llm_live_smoke.py` |
 | Сквозной Live-прогон Tutu/Open-Meteo/OSRM | PASS (см. дополнение) | выполнен по разрешению руководителя, 5 запросов данных |
 | Docker в отдельной среде | BLOCKED | DEC-06; инструкция `docs/DOCKER_CHECK.md` |
-| Детали отеля (`get_offer_details`) → `available` | не реализовано | следующий шаг; сейчас наличие `unknown` |
+| Детали отеля (`get_offer_details`) → `available` | реализовано (волна 2, лучшие K = 3), проверено на фикстурах | Live-прогоном не проверено: для 6 запросов — `ODIN_TOP_K=1` в `tests/live/test_tutu_live_smoke.py` |
 | 2ГИС, климатические нормы, OurAirports | не подключены | DEC-13 (нет ключа), DEC-12 |
 | Видео, тег `submission` | вне разработки | правила организаторов |
 

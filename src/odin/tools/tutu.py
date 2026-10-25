@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from odin.contracts import (
@@ -493,3 +493,196 @@ def normalize_hotels(
     if not offers:
         warnings.append("Tutu search_hotels: источник не вернул вариантов по этим параметрам")
     return hotels, offers, warnings
+
+
+# --------------------------------------------------------------------- детали гостиницы (волна 2)
+
+
+def details_arguments(
+    source_hotel_id: str, check_in: str, check_out: str, adults: int, children_ages: list[int]
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {
+        "product_type": "hotels",
+        "hotel_id": source_hotel_id,
+        "check_in": check_in,
+        "check_out": check_out,
+        "adults": max(1, min(6, adults)),
+    }
+    if children_ages:
+        arguments["children_ages"] = list(children_ages)
+    return arguments
+
+
+def _clock(value: Any) -> time | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return time.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def details_availability(*, data_mode: str, retrieved_at: datetime, parameters: dict[str, Any], status: str):
+    """Детали на конкретные даты и состав — уровень ``offer_details`` (AVAIL-01, DEC-15).
+
+    ``available`` — источник вернул оценённые тарифы на эти даты и состав; это не гарантия брони.
+    ``unavailable`` — источник явно сообщил об отсутствии номеров на даты. Replay — всегда ``unknown``.
+    """
+    from odin.contracts import Availability
+
+    if data_mode != "live":
+        return listing_availability(
+            subject="hotel", data_mode=data_mode, retrieved_at=retrieved_at, parameters=parameters
+        )
+    return Availability(
+        subject="hotel",
+        availability_status=status,  # type: ignore[arg-type]
+        evidence_level="offer_details",
+        verification_status="verified",
+        data_mode="live",
+        checked_at=retrieved_at,
+        parameters=parameters,
+        unknown_reason=None if status != "unknown" else "not_provided_by_source",
+        seats_left=None,
+    )
+
+
+def normalize_hotel_details(
+    payload: dict[str, Any],
+    *,
+    hotel: Hotel,
+    check_in: date,
+    check_out: date,
+    adults: int,
+    children_ages: list[int],
+    request_parameters: dict[str, Any],
+    data_mode: str,
+    retrieved_at: datetime,
+    ttl_minutes: int,
+) -> tuple[Hotel, list[HotelOffer], list[str], str]:
+    """Ответ ``get_offer_details(hotels)`` → уточнённая гостиница и до двух тарифов.
+
+    Тарифы: самый дешёвый и самый дешёвый с завтраком (если отличается) — чтобы ядро могло выбрать
+    вариант, удовлетворяющий условию о завтраке, а не подставлять завтрак из другого тарифа.
+    Чужие даты или состав в ответе — результат не используется.
+    """
+    stay = payload.get("stay") if isinstance(payload.get("stay"), dict) else {}
+    guests = stay.get("guests") if isinstance(stay.get("guests"), dict) else {}
+    if stay.get("check_in") != check_in.isoformat() or stay.get("check_out") != check_out.isoformat():
+        return (
+            hotel,
+            [],
+            ["Tutu get_offer_details: даты ответа не совпадают с запросом — детали не используются"],
+            "unknown",
+        )
+    if guests and guests.get("adults") not in (None, adults):
+        return (
+            hotel,
+            [],
+            ["Tutu get_offer_details: состав гостей ответа не совпадает — детали не используются"],
+            "unknown",
+        )
+    info = payload.get("hotel") if isinstance(payload.get("hotel"), dict) else {}
+    source = live_source(
+        provider=PROVIDER,
+        tool="get_offer_details",
+        source_type="mcp",
+        data_mode=data_mode,
+        retrieved_at=retrieved_at,
+        external_id=hotel.source_hotel_id,
+        url=hotel.source.url,
+        request_parameters=request_parameters,
+        limitations=[LIVE_LIMITATION] if data_mode == "live" else ["снимок Replay"],
+    )
+    refined = hotel.evolve(
+        check_in_from=_clock(info.get("check_in_time")) or hotel.check_in_from,
+        check_out_until=_clock(info.get("check_out_time")) or hotel.check_out_until,
+        location=hotel.location.evolve(address=safe_text(info.get("address"), 200) or hotel.location.address),
+    )
+    rates: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
+    for room in payload.get("rooms") or []:
+        if not isinstance(room, dict):
+            continue
+        for rate in room.get("rates") or []:
+            if not isinstance(rate, dict) or rate.get("price_basis") != "stay_total":
+                continue
+            amount = to_money(rate.get("price"))
+            currency = (
+                (rate.get("price") or {}).get("currency") if isinstance(rate.get("price"), dict) else None
+            )
+            if amount is None or not (
+                isinstance(currency, str) and len(currency) == 3 and currency.isupper()
+            ):
+                continue
+            rates.append((amount, room, rate))
+    notices = [item for item in payload.get("notices") or [] if isinstance(item, dict)]
+    if not rates:
+        no_rooms = any(item.get("kind") == "no_room_offers_for_dates" for item in notices)
+        status = "unavailable" if no_rooms else "unknown"
+        note = (
+            "Tutu: на эти даты у поставщика нет номеров (часто временно)"
+            if no_rooms
+            else "Tutu: детали без оценённых тарифов — наличие не подтверждено"
+        )
+        return refined, [], [note], status
+    rates.sort(key=lambda item: (item[0], str(item[1].get("room_name"))))
+    chosen = [rates[0]]
+    with_breakfast = next((item for item in rates if item[2].get("breakfast_included") is True), None)
+    if with_breakfast is not None and with_breakfast is not rates[0]:
+        chosen.append(with_breakfast)
+    offers: list[HotelOffer] = []
+    for index, (amount, room, rate) in enumerate(chosen):
+        breakfast = (
+            rate.get("breakfast_included") if isinstance(rate.get("breakfast_included"), bool) else None
+        )
+        meal = rate.get("meal") if isinstance(rate.get("meal"), dict) else {}
+        price = Price(
+            amount=amount,
+            currency=rate["price"]["currency"],
+            price_scope="stay_total",
+            guests=adults + len(children_ages),
+            rooms=1,
+            period=PricePeriod(start=check_in, end=check_out),
+            inclusions=["проживание"] + (["завтрак"] if breakfast else []),
+            known_fees=[],
+            mandatory_fees_status="unknown",
+            total_completeness="partial",
+            unknown_reason="price_incomplete",
+            source=source,
+            as_of=retrieved_at,
+        )
+        offers.append(
+            HotelOffer(
+                offer_id=f"TUTU-HD-{hotel.source_hotel_id}-{check_in.isoformat()}-{index}",
+                hotel_id=hotel.hotel_id,
+                check_in=check_in,
+                check_out=check_out,
+                occupancy=Occupancy(adults=adults, children_ages=children_ages, rooms=1),
+                room_type=safe_text(room.get("room_name"), 160),
+                price_total=price,
+                currency=price.currency,
+                price_scope="stay_total",
+                availability=details_availability(
+                    data_mode=data_mode,
+                    retrieved_at=retrieved_at,
+                    parameters=request_parameters,
+                    status="available",
+                ),
+                source=source,
+                terms=HotelTerms(
+                    breakfast_included=breakfast,
+                    meals=safe_text(meal.get("name"), 80),
+                    free_cancellation=rate.get("free_cancellation")
+                    if isinstance(rate.get("free_cancellation"), bool)
+                    else None,
+                    free_cancellation_until=to_aware(rate.get("free_cancellation_until")),
+                ),
+                limitations=[
+                    *source.limitations,
+                    "детали тарифа на даты и состав: наличие по данным поставщика, не гарантия брони",
+                    "налоги и сборы не подтверждены (DEC-16)",
+                ],
+                validity=ttl_validity(retrieved_at, ttl_minutes, data_mode),
+            )
+        )
+    return refined, offers, [], "available"

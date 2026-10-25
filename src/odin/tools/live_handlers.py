@@ -50,7 +50,9 @@ from odin.tools.tutu import (
 from odin.tools.tutu import (
     TutuGateway,
     avia_arguments,
+    details_arguments,
     hotel_arguments,
+    normalize_hotel_details,
     normalize_hotels,
     normalize_transport,
     rail_arguments,
@@ -429,6 +431,84 @@ class LiveToolset:
             "warnings": warnings or [f"трансфер не оценён ({failure})"],
         }
 
+    # ------------------------------------------------------------------ детали гостиниц (волна 2)
+
+    def get_offer_details(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Детали лучших K гостиниц на даты и состав: тарифы, наличие по данным поставщика, время заезда."""
+        from odin.contracts import Hotel
+
+        check_in, check_out = _iso(arguments.get("check_in")), _iso(arguments.get("check_out"))
+        adults = int(arguments.get("adults") or 0)
+        if check_in is None or check_out is None or check_out <= check_in or adults < 1:
+            return mock_adapters._error("нужны даты заезда/выезда и состав группы")
+        hotels = [Hotel.model_validate(item) for item in arguments.get("hotels") or []][:3]
+        if not hotels:
+            return mock_adapters._error("нужен список гостиниц")
+        children = [int(age) for age in arguments.get("children_ages") or []]
+        ttl = int(arguments.get("ttl_minutes") or 30)
+        self.policy.check_provider_tool(TUTU, "get_offer_details")
+        assert self.tutu is not None
+        gateway = self.tutu
+
+        def run(hotel: Any) -> tuple[Any, RawOutcome, dict[str, Any]]:
+            mcp_args = details_arguments(
+                hotel.source_hotel_id, check_in.isoformat(), check_out.isoformat(), adults, children
+            )
+            outcome = self._raw(TUTU, "get_offer_details", lambda a: gateway.call("get_offer_details", a))(
+                mcp_args
+            )
+            return hotel, outcome, mcp_args
+
+        with ThreadPoolExecutor(max_workers=len(hotels)) as pool:
+            results = list(pool.map(run, hotels))
+        offers: list[Any] = []
+        refined: list[Any] = []
+        unavailable: list[str] = []
+        warnings: list[str] = []
+        missing: list[str] = []
+        replayed = False
+        for hotel, outcome, mcp_args in results:
+            warnings.extend(outcome.warnings)
+            if not (outcome.ok and isinstance(outcome.payload, dict)):
+                missing.append(f"детали: {hotel.name}")
+                warnings.append(f"Tutu недоступен ({outcome.error_code}): детали «{hotel.name}» не получены")
+                continue
+            assert outcome.data_mode is not None and outcome.retrieved_at is not None
+            replayed = replayed or outcome.data_mode == "replay"
+            better, items, notes, status = normalize_hotel_details(
+                outcome.payload,
+                hotel=hotel,
+                check_in=check_in,
+                check_out=check_out,
+                adults=adults,
+                children_ages=children,
+                request_parameters={"tool": "get_offer_details", **mcp_args},
+                data_mode=outcome.data_mode,
+                retrieved_at=outcome.retrieved_at,
+                ttl_minutes=ttl,
+            )
+            refined.append(better)
+            offers.extend(items)
+            warnings.extend(notes)
+            if status == "unavailable" and outcome.data_mode == "live":
+                unavailable.append(hotel.hotel_id)
+        response = self._response(
+            "offers", offers, [offers[0].source] if offers else [], warnings, missing, [], replayed
+        )
+        if response["status"] == "empty" and missing and not refined:
+            return {
+                "status": "unavailable",
+                "data": None,
+                "sources": [],
+                "error_code": "details_unavailable",
+                "warnings": warnings,
+            }
+        data = response.get("data") or {"offers": []}
+        data["hotels"] = refined
+        data["unavailable_hotel_ids"] = unavailable
+        response["data"] = data
+        return response
+
     # ------------------------------------------------------------------ общий ответ
 
     @staticmethod
@@ -469,6 +549,7 @@ class LiveToolset:
             "search_hotels": self.search_hotels,
             "geocode": self.geocode,
             "get_transfer_options": self.get_transfer_options,
+            "get_offer_details": self.get_offer_details,
         }
         result: dict[str, Handler] = {"suggest_destinations": mock_adapters.suggest_destinations}
         for tool, handler in live.items():
