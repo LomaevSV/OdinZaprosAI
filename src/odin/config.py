@@ -13,10 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-DataMode = Literal["mock", "replay", "live"]
+DataMode = Literal["mock", "mixed", "live", "replay"]
 LlmMode = Literal["off", "replay", "live"]
 
 DEFAULT_DB_PATH = Path("var") / "odin.sqlite3"
+DEFAULT_REPLAY_DIR = Path("var") / "replay_store"
 
 
 class ConfigError(RuntimeError):
@@ -68,6 +69,67 @@ def _mode(env: Mapping[str, str], name: str, default: str, allowed: tuple[str, .
     return raw
 
 
+# Распространённые имена переменных OpenAI-совместимых клиентов: принимаются как запасные,
+# если ODIN_LLM_* не заданы (удобно при подмене модели в среде проверки).
+LLM_ALIASES: dict[str, tuple[str, ...]] = {
+    "ODIN_LLM_BASE_URL": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
+    "ODIN_LLM_API_KEY": ("OPENAI_API_KEY",),
+    "ODIN_LLM_MODEL": ("OPENAI_MODEL",),
+}
+
+
+def _first(env: Mapping[str, str], *names: str) -> str | None:
+    for name in names:
+        value = (env.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _temperature(env: Mapping[str, str]) -> float | None:
+    """Пусто — 0 (детерминированнее); ``none`` — параметр не передаётся (не все модели его принимают)."""
+    raw = (env.get("ODIN_LLM_TEMPERATURE") or "").strip().lower()
+    if raw == "":
+        return 0.0
+    if raw in ("none", "off", "default"):
+        return None
+    value = _float(env, "ODIN_LLM_TEMPERATURE", 0.0, minimum=0.0)
+    if value > 2.0:
+        raise ConfigError("ODIN_LLM_TEMPERATURE: допустимо 0–2 или none")
+    return value
+
+
+def load_env_file(path: Path | str = ".env", environ: dict[str, str] | None = None) -> list[str]:
+    """Минимальный загрузчик ``.env`` для локального запуска (в Docker файл подключает Compose).
+
+    Уже заданные переменные окружения не перезаписываются. Возвращает имена загруженных переменных
+    (значения не журналируются). Формат: ``KEY=VALUE``, комментарии ``#``, кавычки снимаются.
+    """
+    target = os.environ if environ is None else environ
+    file = Path(path)
+    if not file.is_file():
+        return []
+    loaded: list[str] = []
+    for raw_line in file.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        if not key or not key.replace("_", "").isalnum() or key in target:
+            continue
+        target[key] = value
+        loaded.append(key)
+    return loaded
+
+
 @dataclass(frozen=True, slots=True)
 class Limits:
     """Ресурсные лимиты хода (приложение A, provisional — DEC-22)."""
@@ -85,7 +147,13 @@ class Limits:
     top_k: int = 3
     offer_ttl_minutes: int = 30
     max_concurrency: Mapping[str, int] = field(
-        default_factory=lambda: {"odin_mock": 4, "osrm_demo": 2, "nominatim": 1, "open_meteo": 2}
+        default_factory=lambda: {
+            "odin_mock": 4,
+            "tutu_mcp": 2,
+            "osrm_demo": 2,
+            "nominatim": 1,
+            "open_meteo": 2,
+        }
     )
     buffers_minutes: Mapping[str, int] = field(
         default_factory=lambda: {
@@ -106,14 +174,25 @@ class LlmSettings:
     replay_dir: Path | None = None
     max_output_tokens: int = 4000
     timeout_s: float = 20.0
+    json_mode: bool = True
+    temperature: float | None = 0.0
+    composer: bool = True
+    record: bool = False
+    retries: int = 1
 
     @property
     def live_enabled(self) -> bool:
-        return self.mode == "live" and bool(self.api_key) and bool(self.base_url)
+        return self.mode == "live" and bool(self.api_key) and bool(self.base_url) and bool(self.model)
 
     def describe_key(self) -> str:
         """Только факт наличия ключа — сам ключ не логируется и не отдаётся в API (SECURITY-01)."""
         return "present" if self.api_key else "absent"
+
+    def __repr__(self) -> str:  # ключ не попадает в repr/логи
+        return (
+            f"LlmSettings(mode={self.mode!r}, base_url={self.base_url!r}, model={self.model!r}, "
+            f"key={self.describe_key()})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +203,7 @@ class Settings:
     llm: LlmSettings = field(default_factory=LlmSettings)
     limits: Limits = field(default_factory=Limits)
     db_path: Path = DEFAULT_DB_PATH
+    replay_dir: Path = DEFAULT_REPLAY_DIR
     port: int = 8080
     log_level: str = "INFO"
     cors_origin: str | None = None
@@ -136,26 +216,36 @@ class Settings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         source = os.environ if env is None else env
-        data_mode = _mode(source, "ODIN_DATA_MODE", "mock", ("mock", "replay", "live"))
-        if data_mode != "mock":
-            raise ConfigError(
-                "S1: доступен только Mock-путь (DEC-23); Live и Replay появятся в S2 после DEC-09/DEC-24"
-            )
+        data_mode = _mode(source, "ODIN_DATA_MODE", "mock", ("mock", "mixed", "live", "replay"))
         llm_mode = _mode(source, "ODIN_LLM_MODE", "off", ("off", "replay", "live"))
         llm = LlmSettings(
             mode=llm_mode,  # type: ignore[arg-type]
-            base_url=(source.get("ODIN_LLM_BASE_URL") or None),
-            model=(source.get("ODIN_LLM_MODEL") or None),
-            api_key=(source.get("ODIN_LLM_API_KEY") or None),
+            base_url=_first(source, "ODIN_LLM_BASE_URL", *LLM_ALIASES["ODIN_LLM_BASE_URL"]),
+            model=_first(source, "ODIN_LLM_MODEL", *LLM_ALIASES["ODIN_LLM_MODEL"]),
+            api_key=_first(source, "ODIN_LLM_API_KEY", *LLM_ALIASES["ODIN_LLM_API_KEY"]),
             replay_dir=Path(source["ODIN_LLM_REPLAY_DIR"]) if source.get("ODIN_LLM_REPLAY_DIR") else None,
             max_output_tokens=_int(source, "ODIN_LLM_MAX_OUTPUT_TOKENS", 4000, minimum=1),
             timeout_s=_float(source, "ODIN_LLM_TIMEOUT_S", 20.0, minimum=0.1),
+            json_mode=_bool(source, "ODIN_LLM_JSON_MODE", True),
+            temperature=_temperature(source),
+            composer=_bool(source, "ODIN_LLM_COMPOSER", True),
+            record=_bool(source, "ODIN_LLM_RECORD", False),
+            retries=_int(source, "ODIN_LLM_RETRIES", 1),
         )
         if llm_mode == "live" and not llm.live_enabled:
             raise ConfigError(
-                "ODIN_LLM_MODE=live требует ODIN_LLM_API_KEY и ODIN_LLM_BASE_URL (DEC-07); "
+                "ODIN_LLM_MODE=live требует ODIN_LLM_API_KEY, ODIN_LLM_BASE_URL и ODIN_LLM_MODEL (DEC-07); "
                 "без ключа доступен только ODIN_LLM_MODE=off (DEC-08)"
             )
+        if llm_mode == "live" and llm.base_url:
+            from odin.llm.openai_client import LlmEndpointError, validate_endpoint
+
+            try:
+                validate_endpoint(llm.base_url)
+            except LlmEndpointError as exc:
+                raise ConfigError(str(exc)) from exc
+        if llm.record and llm.replay_dir is None:
+            raise ConfigError("ODIN_LLM_RECORD=true требует ODIN_LLM_REPLAY_DIR (куда записывать ответы)")
         limits = Limits(
             turn_deadline_s=_float(source, "ODIN_TURN_DEADLINE_S", 60.0, minimum=0.1),
             tool_timeout_s=_float(source, "ODIN_TOOL_TIMEOUT_S", 20.0, minimum=0.1),
@@ -171,6 +261,7 @@ class Settings:
             llm=llm,
             limits=limits,
             db_path=Path(source.get("ODIN_DB_PATH") or DEFAULT_DB_PATH),
+            replay_dir=Path(source.get("ODIN_REPLAY_DIR") or DEFAULT_REPLAY_DIR),
             port=_int(source, "ODIN_PORT", 8080, minimum=1),
             log_level=(source.get("ODIN_LOG_LEVEL") or "INFO").upper(),
             cors_origin=(source.get("ODIN_CORS_ORIGIN") or None),
@@ -187,6 +278,11 @@ ENV_VARS = (
     "ODIN_LLM_REPLAY_DIR",
     "ODIN_LLM_MAX_OUTPUT_TOKENS",
     "ODIN_LLM_TIMEOUT_S",
+    "ODIN_LLM_JSON_MODE",
+    "ODIN_LLM_TEMPERATURE",
+    "ODIN_LLM_COMPOSER",
+    "ODIN_LLM_RECORD",
+    "ODIN_LLM_RETRIES",
     "ODIN_TURN_DEADLINE_S",
     "ODIN_TOOL_TIMEOUT_S",
     "ODIN_TOOL_RETRIES",
@@ -196,6 +292,7 @@ ENV_VARS = (
     "ODIN_TOP_K",
     "ODIN_OFFER_TTL_MINUTES",
     "ODIN_DB_PATH",
+    "ODIN_REPLAY_DIR",
     "ODIN_PORT",
     "ODIN_LOG_LEVEL",
     "ODIN_CORS_ORIGIN",

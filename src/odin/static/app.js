@@ -41,9 +41,15 @@ function say(role, message) {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
+const MODE_LABELS = {
+  mock: "ДЕМО (Mock)",
+  replay: "Replay: данные на дату",
+  live: "Live",
+  mixed: "Смешанный: Live + ДЕМО",
+};
+
 function modeBadge(mode) {
-  const labels = { mock: "ДЕМО (Mock)", replay: "Replay: данные на дату", live: "Live" };
-  return el("span", { class: `badge badge-${mode}`, "data-testid": "mode-badge" }, labels[mode] || mode);
+  return el("span", { class: `badge badge-${mode}`, "data-testid": "mode-badge" }, MODE_LABELS[mode] || mode);
 }
 
 function money(price) {
@@ -93,7 +99,7 @@ function renderTrip(trip) {
   if (plan) {
     summary.append(
       el("p", { "data-testid": "plan-total" }, `Итог: ${money(plan.total_price)} — стоимость ${COMPLETENESS[plan.completeness]}`),
-      el("p", { class: "meta" }, `Режим поездки: ${plan.trip_data_mode === "mock" ? "ДЕМО (Mock)" : plan.trip_data_mode}`),
+      el("p", { class: "meta" }, `Режим поездки: ${MODE_LABELS[plan.trip_data_mode] || plan.trip_data_mode}`),
     );
     if (plan.unknowns.length) summary.append(el("p", { class: "meta" }, "Не подтверждено: " + plan.unknowns.join("; ")));
     for (const check of plan.connection_checks) {
@@ -202,6 +208,16 @@ async function ensureSession() {
   state.session = await call("POST", `${API}/sessions`);
   state.revision = state.session.trip_revision;
   $("llm-badge").textContent = `LLM: ${state.session.llm_mode}`;
+  const dataMode = state.session.data_mode;
+  $("mode-badge").textContent = `Данные: ${dataMode === "mixed" ? "Live (при сбое — ДЕМО)" : MODE_LABELS[dataMode] || dataMode}`;
+  $("mode-badge").className = `badge badge-${dataMode === "mock" ? "mock" : "live"}`;
+  if (state.session.llm_mode === "live") {
+    $("llm-notice").textContent =
+      "LLM подключён: опишите поездку своими словами. Цены, даты и условия проверяет код, а не модель.";
+    $("text-label").textContent = "Опишите поездку или изменение условий";
+  } else if (state.session.llm_mode === "replay") {
+    $("llm-notice").textContent = "LLM в режиме Replay: понимаются только заранее записанные фразы.";
+  }
   renderTrip(state.session.state);
   return state.session;
 }
@@ -260,7 +276,7 @@ $("text-form").addEventListener("submit", (event) => {
   const value = $("text-input").value.trim();
   if (!value) return;
   say("user", value);
-  sendMessage({ text: value });
+  sendMessage({ text: value }).then(() => { $("text-input").value = ""; });
 });
 
 $("cart-btn").addEventListener("click", async () => {

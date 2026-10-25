@@ -98,11 +98,13 @@ def test_session_lock_serializes_turns(storage: Storage) -> None:
 
 
 @pytest.mark.req("SECURITY-01", "DEC-23")
-def test_config_defaults_and_s1_restrictions() -> None:
+def test_config_defaults_and_restrictions() -> None:
     settings = Settings.from_env({})
     assert settings.data_mode == "mock" and settings.llm.mode == "off" and settings.port == 8080
+    for mode in ("mixed", "live", "replay"):
+        assert Settings.from_env({"ODIN_DATA_MODE": mode}).data_mode == mode
     with pytest.raises(ConfigError):
-        Settings.from_env({"ODIN_DATA_MODE": "live"})
+        Settings.from_env({"ODIN_DATA_MODE": "demo"})
     with pytest.raises(ConfigError):
         Settings.from_env({"ODIN_LLM_MODE": "live"})  # без ключа live запрещён
     with pytest.raises(ConfigError):

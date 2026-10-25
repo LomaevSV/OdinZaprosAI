@@ -167,6 +167,50 @@ def amount_text(amount: Decimal | None) -> str | None:
     return None if amount is None else format(amount, "f")
 
 
+# Утверждения, которые LLM-Composer не может добавить сам (UC-08, AVAIL-01): только если они есть в черновике.
+_CLAIM_STEMS = ("заброниров", "оплачен", "оплатил", "гарантир", "в наличии", "точно есть", "свободн")
+
+
+def facts_payload(facts: ComposerFacts) -> dict[str, Any]:
+    """Таблица фактов для LLM-Composer: только непустые слоты."""
+    data: dict[str, Any] = {}
+    for item in dataclass_fields(facts):
+        value = getattr(facts, item.name)
+        if value in (None, (), ""):
+            continue
+        data[item.name] = list(value) if isinstance(value, tuple) else value
+    return data
+
+
+def check_rewrite(draft: str, candidate: str, facts: ComposerFacts) -> tuple[bool, str, list[str]]:
+    """Проверка переформулировки LLM (TEST-04): числа — только из фактов, без новых обещаний.
+
+    Возвращает (принято, итоговый текст, причины отказа). Пометка режима данных добавляется кодом,
+    если модель её потеряла: маркировка Mock/Replay не может исчезнуть (DATA-MODE-01).
+    """
+    text = candidate.strip()
+    reasons: list[str] = []
+    if not text:
+        return False, draft, ["пустой ответ"]
+    ok, offenders = verify_facts(text, facts)
+    if not ok:
+        reasons.append("числа вне таблицы фактов: " + ", ".join(offenders[:5]))
+    lowered, draft_lowered = text.lower(), draft.lower()
+    for stem in _CLAIM_STEMS:
+        if stem in lowered and stem not in draft_lowered:
+            reasons.append(f"новое утверждение «{stem}…»")
+    if facts.questions and "?" not in text:
+        reasons.append("вопросы черновика потеряны")
+    if len(text) > max(1500, 3 * len(draft)):
+        reasons.append("ответ слишком длинный")
+    if reasons:
+        return False, draft, reasons
+    note = facts.mode_note.rstrip(".")
+    if note and note.lower() not in lowered and note.lower() in draft_lowered:
+        text = f"{text}\n{note}."
+    return True, text, []
+
+
 def money_text(amount: Decimal | None, currency: str | None) -> str:
     """Сумма в формате ответа (те же правила, что у итога плана)."""
     return _money(amount_text(amount), currency)

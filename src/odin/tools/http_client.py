@@ -50,6 +50,7 @@ class HttpJsonClient:
         max_wait_s: float = 2.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.allowed_hosts = allowed_hosts
         self.timeout_s = timeout_s
@@ -57,7 +58,9 @@ class HttpJsonClient:
         self.backoff_s = backoff_s
         self.max_wait_s = max_wait_s
         self.sleep = sleep
-        self._client = httpx.Client(timeout=timeout_s, transport=transport, follow_redirects=False)
+        self._client = httpx.Client(
+            timeout=timeout_s, transport=transport, follow_redirects=False, headers=headers or {}
+        )
 
     def check_url(self, url: str) -> None:
         parts = urlsplit(url)

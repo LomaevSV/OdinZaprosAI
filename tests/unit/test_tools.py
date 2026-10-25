@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -51,18 +52,26 @@ def test_checkout_tool_is_always_denied_before_network() -> None:
     assert "реальный заказ" in err.value.reason
 
 
+APPROVED = {"tutu_mcp", "open_meteo", "osrm_demo"}  # DEC-09, 25.10.2026
+
+
 @pytest.mark.negative
 @pytest.mark.req("PROVIDER-01", "T-DLV-REG-01", "DEC-09")
-def test_unapproved_providers_are_denied() -> None:
+def test_only_owner_approved_providers_are_live_and_allowlists_hold() -> None:
     policies = load_provider_policies()
     assert policies, "реестр провайдеров должен читаться"
-    assert all(policy.approval_status != "approved" for policy in policies.values())
-    policy = ToolPolicy(data_mode="mock", policies=policies)
-    for provider in policies:
+    assert {pid for pid, item in policies.items() if item.approval_status == "approved"} == APPROVED
+    policy = ToolPolicy(data_mode="live", policies=policies)
+    for provider in set(policies) - APPROVED:
         with pytest.raises(ToolDeniedError):
             policy.check_provider_tool(provider, "search_hotels")
+    for tool in ("search_rail", "search_avia", "search_hotels", "get_offer_details"):
+        policy.check_provider_tool("tutu_mcp", tool)  # allowlist утверждённого провайдера
+    for tool in ("create_checkout_link", "get_rail_seatmap", "get_hotels_instructions", "search_bus"):
+        with pytest.raises(ToolDeniedError):
+            policy.check_provider_tool("tutu_mcp", tool)  # DEC-10 / P1
     with pytest.raises(ToolDeniedError):
-        policy.check_provider_tool("tutu_mcp", "create_checkout_link")
+        policy.check_provider_tool("open_meteo", "forecast")  # прогноз — P1, не утверждён
     with pytest.raises(ToolDeniedError):
         policy.check_provider_tool("unknown_provider", "anything")
     with pytest.raises(ToolDeniedError):
@@ -80,11 +89,22 @@ def test_unknown_or_unimplemented_logical_tools_are_denied() -> None:
 
 
 @pytest.mark.negative
-def test_live_mode_logical_tools_are_blocked_in_s1() -> None:
-    policy = ToolPolicy(data_mode="live", policies=load_provider_policies())
+@pytest.mark.req("DEC-09", "DEC-23")
+def test_live_and_mixed_routing_follows_approvals() -> None:
+    policies = load_provider_policies()
+    live = ToolPolicy(data_mode="live", policies=policies)
+    assert live.check_logical("search_hotels") == "tutu_mcp"
+    assert live.check_logical("geocode") == "open_meteo"
+    assert live.check_logical("get_transfer_options") == "osrm_demo"
+    assert live.check_logical("suggest_destinations") == "odin_mock"  # редакционный каталог
+    with pytest.raises(ToolDeniedError):
+        live.check_logical("get_reviews")
+    unapproved = {pid: replace(item, approval_status="proposed") for pid, item in policies.items()}
     with pytest.raises(ToolDeniedError) as err:
-        policy.check_logical("search_hotels")
+        ToolPolicy(data_mode="live", policies=unapproved).check_logical("search_hotels")
     assert err.value.decision == "DEC-09"
+    mixed = ToolPolicy(data_mode="mixed", policies=unapproved)
+    assert mixed.check_logical("search_hotels") == "odin_mock"  # явный Mock по компоненту
 
 
 # --------------------------------------------------------------------- реестр
@@ -195,6 +215,12 @@ def test_domains_core_and_llm_do_not_import_registry_or_adapters() -> None:
 
 @pytest.mark.req("ARCH-06", "SECURITY-01")
 def test_llm_has_no_tools_or_write_access() -> None:
-    gateway_source = (SRC / "llm" / "gateway.py").read_text(encoding="utf-8")
-    assert "httpx" not in gateway_source  # в S1 LLM Live-вызовов нет
-    assert "Storage" not in gateway_source and "ToolRegistry" not in gateway_source
+    """LLM не имеет инструментов и записи: сеть — только клиент Chat Completions, без tools/function calling."""
+    for path in (SRC / "llm").glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert "Storage" not in source and "ToolRegistry" not in source, path.name
+        if path.name not in ("openai_client.py", "gateway.py"):
+            assert "httpx" not in source, path.name
+    client_source = (SRC / "llm" / "openai_client.py").read_text(encoding="utf-8")
+    assert '"tools"' not in client_source and "function_call" not in client_source
+    assert "follow_redirects=False" in client_source

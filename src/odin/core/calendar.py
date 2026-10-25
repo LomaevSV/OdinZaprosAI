@@ -42,12 +42,40 @@ WEEKDAYS = {
     "воскресенье": 6,
 }
 NUMBER_WORDS = {"одну": 1, "один": 1, "две": 2, "два": 2, "три": 3, "четыре": 4, "пять": 5, "неделю": 1}
+# Количественные слова для длительности («на три ночи», «на двое суток»).
+COUNT_WORDS = {
+    "одну": 1,
+    "одна": 1,
+    "один": 1,
+    "сутки": 1,
+    "две": 2,
+    "два": 2,
+    "двое": 2,
+    "три": 3,
+    "трое": 3,
+    "четыре": 4,
+    "четверо": 4,
+    "пять": 5,
+    "пятеро": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+}
 
-_RANGE = re.compile(r"(\d{1,2})\s*[-–—]\s*(\d{1,2})\s+(" + "|".join(MONTHS) + r")(?:\s+(\d{4}))?")
-_DAY_MONTH = re.compile(r"(\d{1,2})\s+(" + "|".join(MONTHS) + r")(?:\s+(\d{4}))?")
+_MONTHS_RE = "|".join(MONTHS)
+_RANGE = re.compile(r"(\d{1,2})\s*[-–—]\s*(\d{1,2})\s+(" + _MONTHS_RE + r")(?:\s+(\d{4}))?")
+_FROM_TO = re.compile(r"(?:^|\s)с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(" + _MONTHS_RE + r")(?:\s+(\d{4}))?")
+_DAY_MONTH = re.compile(r"(\d{1,2})\s+(" + _MONTHS_RE + r")(?:\s+(\d{4}))?")
 _NUMERIC = re.compile(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b")
 _ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 _IN_PERIOD = re.compile(r"через\s+(\d+|" + "|".join(NUMBER_WORDS) + r")?\s*(дн\w*|недел\w*)")
+_COUNT_RE = r"(\d{1,2}|" + "|".join(COUNT_WORDS) + r")"
+_NIGHTS = re.compile(_COUNT_RE + r"\s+(ноч\w*|сут\w*)")
+_SUTKI = re.compile(r"\bна\s+сутки\b")
+_WEEKS = re.compile(r"(?:(\d{1,2}|" + "|".join(COUNT_WORDS) + r")\s+)?недел[юиь]\w*")
+_DAYS = re.compile(_COUNT_RE + r"\s+(дн\w*|дня)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +115,71 @@ def _weekend_after(day: date) -> date:
     return day + timedelta(days=(5 - day.weekday()) % 7)
 
 
+def _mentions(phrase: str) -> list[tuple[int, int, int, int | None]]:
+    """Абсолютные упоминания дат по порядку: (позиция, день, месяц, год|None), без перекрытий."""
+    found: list[tuple[int, int, int, int, int | None]] = []
+    for match in _ISO.finditer(phrase):
+        found.append((match.start(), match.end(), int(match[3]), int(match[2]), int(match[1])))
+    for match in _DAY_MONTH.finditer(phrase):
+        year = int(match[3]) if match[3] else None
+        found.append((match.start(), match.end(), int(match[1]), MONTHS[match[2]], year))
+    for match in _NUMERIC.finditer(phrase):
+        year = int(match[3]) if match[3] else None
+        found.append((match.start(), match.end(), int(match[1]), int(match[2]), year))
+    found.sort()
+    result: list[tuple[int, int, int, int | None]] = []
+    last_end = -1
+    for start, end, day, month, year in found:
+        if start < last_end:
+            continue
+        result.append((start, day, month, year))
+        last_end = end
+    return result
+
+
+def _mention_date(day: int, month: int, year: int | None, not_before: date) -> date | None:
+    if not 1 <= month <= 12:
+        return None
+    if year is not None:
+        return _safe_date(year, month, day)
+    return _next_occurrence(not_before, month, day)
+
+
+def _two_dates(phrase: str, today: date) -> Resolution | None:
+    """«с 10 ноября по 12 ноября», «30 декабря – 5 января», «10.11–12.11»: начало и конец."""
+    mentions = _mentions(phrase)
+    if len(mentions) < 2:
+        return None
+    if len(mentions) > 2:
+        return Resolution("unresolved", None, None, "больше двух дат во фразе: требуется уточнение")
+    (_, d1, m1, y1), (_, d2, m2, y2) = mentions
+    first = _mention_date(d1, m1, y1, today)
+    if first is None:
+        return Resolution("unresolved", None, None, "первая дата не существует")
+    second = _mention_date(d2, m2, y2, first + timedelta(days=1))
+    if second is None or second <= first:
+        return Resolution("unresolved", None, None, "вторая дата не позже первой или не существует")
+    rule = "две даты: начало и конец" + ("" if y1 and y2 else "; без года — ближайшее будущее вхождение")
+    return Resolution("resolved", first, second, rule)
+
+
 def _resolve(text: str, today: date) -> Resolution:
     phrase = " ".join(text.lower().replace("ё", "е").split())
+
+    if (pair := _two_dates(phrase, today)) is not None:
+        return pair
+
+    if match := _FROM_TO.search(phrase):
+        month = MONTHS[match[3]]
+        first, last = int(match[1]), int(match[2])
+        if match[4]:
+            start, end = _safe_date(int(match[4]), month, first), _safe_date(int(match[4]), month, last)
+        else:
+            start = _next_occurrence(today, month, first)
+            end = _safe_date(start.year, month, last) if start else None
+        if start is None or end is None or end <= start:
+            return Resolution("unresolved", None, None, "диапазон дат некорректен")
+        return Resolution("resolved", start, end, "диапазон «с Д по Д месяца»")
 
     if match := _ISO.search(phrase):
         value = _safe_date(int(match[1]), int(match[2]), int(match[3]))
@@ -209,3 +300,85 @@ def resolve_date_expression(
         resolved_end=resolution.end,
     )
     return expression, resolution
+
+
+def _count(raw: str | None, default: int = 1) -> int:
+    if not raw:
+        return default
+    return int(raw) if raw.isdigit() else COUNT_WORDS.get(raw, default)
+
+
+def nights_value(raw_text: str) -> tuple[int | None, str, str]:
+    """Длительность в ночах: (число | None, статус, правило).
+
+    «N дней» неоднозначно (N или N−1 ночей) — вопрос, а не догадка.
+    """
+    phrase = " ".join(raw_text.lower().replace("ё", "е").split())
+    if match := _NIGHTS.search(phrase):
+        nights = _count(match[1])
+        if 1 <= nights <= 30:
+            return nights, "resolved", "«N ночей/суток» = N ночей"
+        return None, "unresolved", "число ночей вне диапазона 1–30"
+    if _SUTKI.search(phrase):
+        return 1, "resolved", "«на сутки» = 1 ночь"
+    if match := _WEEKS.search(phrase):
+        weeks = _count(match[1])
+        if 1 <= weeks <= 4:
+            return weeks * 7, "resolved", "«N недель» = 7×N ночей"
+        return None, "unresolved", "длительность вне диапазона"
+    if _DAYS.search(phrase):
+        return None, "ambiguous", "«N дней» допускает N или N−1 ночей: нужен вопрос"
+    return None, "unresolved", "длительность не распознана"
+
+
+@dataclass(frozen=True, slots=True)
+class TripDates:
+    """Итог разрешения дат поездки из фраз пользователя (INTERPRET-02)."""
+
+    status: str  # resolved | partial | ambiguous | unresolved
+    start: date | None
+    end: date | None
+    expressions: tuple[DateExpression, ...]
+    question: str | None
+    rule: str
+
+
+def resolve_trip_dates(
+    date_phrase: str | None,
+    nights_phrase: str | None,
+    reference_datetime: datetime,
+    timezone_name: str | None,
+) -> TripDates:
+    """Даты отъезда и возвращения: календарь + длительность. LLM даёт только фразы, даты считает код."""
+    if not date_phrase:
+        return TripDates("unresolved", None, None, (), None, "даты не названы")
+    expression, resolution = resolve_date_expression(date_phrase, reference_datetime, timezone_name)
+    expressions = (expression,)
+    if resolution.status == "ambiguous":
+        options = "; ".join(
+            start.isoformat() + (f" – {end.isoformat()}" if end else "")
+            for start, end in resolution.candidates
+        )
+        question = f"Уточните даты: «{date_phrase}» можно понять по-разному ({options})."
+        return TripDates("ambiguous", None, None, expressions, question, resolution.rule)
+    if resolution.status != "resolved" or resolution.start is None:
+        question = (
+            f"Не удалось определить даты по фразе «{date_phrase}». Назовите даты отъезда и возвращения."
+        )
+        return TripDates("unresolved", None, None, expressions, question, resolution.rule)
+    if resolution.end is not None:
+        return TripDates("resolved", resolution.start, resolution.end, expressions, None, resolution.rule)
+    if not nights_phrase:
+        return TripDates("partial", resolution.start, None, expressions, None, resolution.rule)
+    nights, status, rule = nights_value(nights_phrase)
+    if nights is None:
+        question = (
+            f"Сколько ночей длится поездка? Фразу «{nights_phrase}» можно понять по-разному."
+            if status == "ambiguous"
+            else f"Не удалось определить длительность по фразе «{nights_phrase}». Сколько ночей?"
+        )
+        return TripDates(status, resolution.start, None, expressions, question, rule)
+    end = resolution.start + timedelta(days=nights)
+    return TripDates(
+        "resolved", resolution.start, end, expressions, None, f"{resolution.rule}; {rule}: {nights}"
+    )

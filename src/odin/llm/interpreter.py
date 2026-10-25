@@ -162,15 +162,22 @@ def interpret_structured_form(
     )
 
 
-def refuse_free_text(*, session_id: str, request_id: str) -> InterpretationOutcome:
-    """Свободный текст без LLM: явный ограниченный режим, а не имитация диалога."""
+def refuse_free_text(*, session_id: str, request_id: str, reason: str | None = None) -> InterpretationOutcome:
+    """Свободный текст без работающего LLM: явный ограниченный режим, а не имитация диалога."""
+    if reason is None:
+        message = (
+            "Свободный диалог недоступен: LLM отключён (DEC-08). "
+            "Заполните форму или включите LLM по решению DEC-07."
+        )
+    else:
+        message = (
+            f"Свободный диалог недоступен: {reason}. "
+            "Повторите сообщение позже или заполните форму — условия не потеряны."
+        )
     return InterpretationOutcome(
         request=None,
         mode="llm_unavailable",
-        notes=[
-            "Свободный диалог недоступен: LLM отключён (DEC-08). "
-            "Заполните форму или включите LLM по решению DEC-07."
-        ],
+        notes=[message],
         free_text_refused=True,
     )
 

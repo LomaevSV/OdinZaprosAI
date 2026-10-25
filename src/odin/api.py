@@ -97,7 +97,8 @@ def create_app(settings: Settings | None = None, *, application: Application | N
         title="О!дин запрос API",
         version=__version__,
         description=(
-            "JSON API прототипа AI-турагента. Срез S1: только Mock-данные с маркировкой «ДЕМО». "
+            "JSON API прототипа AI-турагента. Режимы данных: Live (Tutu MCP, Open-Meteo, OSRM), Replay "
+            "и ДЕМО (Mock) с явной маркировкой каждого компонента. "
             "Демонстрационная покупка: реального бронирования и списания средств нет."
         ),
         lifespan=lifespan,
@@ -153,16 +154,21 @@ def create_app(settings: Settings | None = None, *, application: Application | N
     def health() -> HealthResponse:
         application_ = core()
         database_ok = application_.storage.ping()
+        live_mode = settings.data_mode in ("live", "mixed")
+
+        def reason(policy: Any) -> str:
+            if policy.approval_status != "approved":
+                return f"провайдер не утверждён ({policy.decision_ref or 'DEC-09'}): Live не используется"
+            if not live_mode:
+                return f"утверждён (DEC-09); сеть выключена режимом ODIN_DATA_MODE={settings.data_mode}"
+            return f"утверждён (DEC-09); режим {settings.data_mode}"
+
         providers = [
             ProviderHealth(
                 provider_id=policy.provider_id,
                 approval_status=policy.approval_status,
-                live_enabled=False,
-                reason=(
-                    "Live не используется в S1: провайдер не утверждён"
-                    if policy.approval_status != "approved"
-                    else "Live в S1 выключен конфигурацией"
-                ),
+                live_enabled=live_mode and policy.approval_status == "approved",
+                reason=reason(policy),
             )
             for policy in load_provider_policies().values()
         ]
@@ -221,6 +227,8 @@ def create_app(settings: Settings | None = None, *, application: Application | N
         )
         if body.form is not None:
             input_mode = "structured_form"
+        elif result.input_mode in ("free_text_llm", "free_text_replay", "llm_unavailable"):
+            input_mode = result.input_mode
         elif result.state.request is not None and result.state.request.input_mode == "free_text_replay":
             input_mode = "free_text_replay"
         else:
@@ -399,6 +407,9 @@ def openapi_document(app: FastAPI | None = None) -> dict[str, Any]:
 def main() -> None:
     import uvicorn
 
+    from odin.config import load_env_file
+
+    load_env_file(".env")  # локальный запуск; уже заданное окружение имеет приоритет
     settings = Settings.from_env()
     uvicorn.run(
         create_app(settings), host="0.0.0.0", port=settings.port, log_level=settings.log_level.lower()

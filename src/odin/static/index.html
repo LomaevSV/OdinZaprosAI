@@ -13,17 +13,19 @@
     <span class="badge" id="llm-badge" data-testid="llm-mode">LLM: —</span>
   </header>
   <p class="notice" data-testid="demo-notice">
-    Прототип. Все данные — демонстрационные (ДЕМО): это не цены, не наличие и не расписание.
-    Свободный диалог недоступен без LLM (DEC-08) — используйте форму.
+    Прототип. Данные с пометкой «ДЕМО» — демонстрационные: это не цены, не наличие и не расписание.
+    Live-данные — на момент запроса; покупка только демонстрационная.
+    <span id="llm-notice">Свободный диалог недоступен без LLM (DEC-08) — используйте форму.</span>
   </p>
 
   <main class="layout">
     <section class="chat" aria-label="Чат">
       <div id="messages" class="messages" data-testid="messages" aria-live="polite"></div>
       <div id="questions" class="questions" data-testid="questions"></div>
-      <form id="text-form" class="text-form">
-        <label for="text-input">Свободный текст (без LLM будет честный отказ)</label>
-        <textarea id="text-input" rows="2" maxlength="4000"></textarea>
+      <form id="text-form" class="text-form" data-testid="text-form">
+        <label for="text-input" id="text-label">Свободный текст (без LLM будет честный отказ)</label>
+        <textarea id="text-input" rows="2" maxlength="4000"
+          placeholder="Например: из Москвы в Казань 20–22 ноября вдвоём, не самолётом, до 60 000 ₽"></textarea>
         <button type="submit">Отправить текст</button>
       </form>
 

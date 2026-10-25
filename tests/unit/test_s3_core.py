@@ -268,9 +268,15 @@ def test_cart_is_repriced_after_replan(client: Any) -> None:
     from tests.conftest import trip_form
 
     session = client.post("/api/v1/sessions").json()
+    # Вид транспорта фиксирован: при равных классах RANK-01 порядок задаётся каноническим ID (DEC-26),
+    # который зависит от даты, — без фиксации сравнивались бы разные виды транспорта.
     turn = client.post(
         f"/api/v1/sessions/{session['session_id']}/messages",
-        json={"request_id": "req-reprice-01", "trip_revision": 1, "form": trip_form()},
+        json={
+            "request_id": "req-reprice-01",
+            "trip_revision": 1,
+            "form": trip_form(transport_modes=["rail"]),
+        },
     ).json()
     cart_one = client.post(
         f"/api/v1/trips/{turn['trip_id']}/cart",

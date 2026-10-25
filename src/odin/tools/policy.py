@@ -1,7 +1,7 @@
 """Политика инструментов: deny-by-default, allowlist «сервер + инструмент» (SECURITY-01, ARCH-03).
 
-Запрет проверяется в коде до любого обращения к сети. В S1 внешние провайдеры не вызываются вовсе:
-у всех `approval_status=proposed` (DEC-09), поэтому работает только Mock.
+Запрет проверяется в коде до любого обращения к сети. Live-вызов возможен только к провайдеру с
+``approval_status=approved`` в реестре (DEC-09) и только к инструментам его allowlist.
 """
 
 from __future__ import annotations
@@ -24,6 +24,15 @@ LOGICAL_TOOLS = (
     "get_reviews",
     "suggest_destinations",
 )
+
+# Логический инструмент → провайдер в режимах live/mixed/replay (план §2.5). Вдохновение — каталог.
+LIVE_ROUTES: dict[str, str] = {
+    "search_transport": "tutu_mcp",
+    "search_hotels": "tutu_mcp",
+    "geocode": "open_meteo",
+    "get_transfer_options": "osrm_demo",
+    "suggest_destinations": "odin_mock",
+}
 
 # Логические инструменты, разрешённые в S1 (Mock-путь). Остальные — объявлены, но не реализованы.
 MOCK_SUPPORTED_TOOLS = (
@@ -89,7 +98,7 @@ def load_provider_policies(path: Path | None = None) -> dict[str, ProviderPolicy
     data: dict[str, Any] = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
     policies: dict[str, ProviderPolicy] = {}
     for card in data.get("providers", []):
-        mcp_policy = card.get("mcp_policy") or {}
+        mcp_policy = card.get("mcp_policy") or card.get("tool_policy") or {}
         policies[card["id"]] = ProviderPolicy(
             provider_id=card["id"],
             approval_status=card.get("approval_status", "proposed"),
@@ -122,11 +131,21 @@ class ToolPolicy:
             if tool not in MOCK_SUPPORTED_TOOLS:
                 raise ToolDeniedError(tool, MOCK_PROVIDER, "инструмент не реализован в Mock-пути S1")
             return MOCK_PROVIDER
+        provider = LIVE_ROUTES.get(tool)
+        if provider is None:
+            raise ToolDeniedError(tool, "registry", "инструмент не реализован для Live (deny-by-default)")
+        if provider == MOCK_PROVIDER:
+            return MOCK_PROVIDER  # внутренний редакционный каталог (вдохновение), всегда с маркировкой
+        policy = self.policies.get(provider)
+        if policy is not None and policy.live_allowed:
+            return provider
+        if self.data_mode == "mixed" and tool in MOCK_SUPPORTED_TOOLS:
+            return MOCK_PROVIDER  # DEC-23: неутверждённый провайдер в mixed → явный Mock по компоненту
         raise ToolDeniedError(
             tool,
-            "registry",
-            "Live-вызовы в S1 запрещены: ни один провайдер не утверждён",
-            decision="DEC-09",
+            provider,
+            f"провайдер не утверждён (approval_status={policy.approval_status if policy else 'нет карточки'})",
+            policy.decision_ref if policy else "DEC-09",
         )
 
     def check_provider_tool(self, provider: str, tool: str) -> None:

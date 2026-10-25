@@ -1,37 +1,45 @@
-# «О!дин запрос» — образ S1 (DELIVERY-01, план §2.16). Mock-путь не требует платного ключа.
-FROM python:3.12-slim AS base
+# «О!дин запрос» — образ приложения (DELIVERY-01; «Правила по технике» организаторов, DEC-32).
+# Multi-stage: сборка зависимостей с uv в builder, в рантайме только Python и виртуальное окружение
+# (без uv, компиляторов и dev-зависимостей). Процесс — под непривилегированным пользователем.
+# Базовые образы зафиксированы по версии; Mock-путь не требует платного ключа.
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy \
+ARG PYTHON_IMAGE=python:3.12.7-slim-bookworm
+
+FROM ghcr.io/astral-sh/uv:0.11.6 AS uv
+
+FROM ${PYTHON_IMAGE} AS builder
+ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_PROJECT_ENVIRONMENT=/opt/venv \
-    ODIN_PORT=8080 \
-    ODIN_DATA_MODE=mock \
-    ODIN_LLM_MODE=off \
-    ODIN_DB_PATH=/data/odin.sqlite3
-
-# uv фиксированной версии из официального образа (без curl | sh).
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
-
-WORKDIR /app
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+COPY --from=uv /uv /usr/local/bin/uv
+WORKDIR /build
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-COPY config ./config
-COPY schemas ./schemas
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
-RUN useradd --system --uid 10001 --home-dir /app odin \
-    && mkdir -p /data \
+FROM ${PYTHON_IMAGE} AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    ODIN_PORT=8080 \
+    ODIN_DATA_MODE=mock \
+    ODIN_LLM_MODE=off \
+    ODIN_DB_PATH=/data/odin.sqlite3 \
+    ODIN_REPLAY_DIR=/data/replay_store
+RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin odin \
+    && mkdir -p /data /app \
     && chown -R odin /data
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+COPY config ./config
 USER odin
 
-ENV PATH="/opt/venv/bin:${PATH}"
 EXPOSE 8080
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-m", "odin.healthcheck"]
 
 CMD ["python", "-m", "odin.api"]

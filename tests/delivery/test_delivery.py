@@ -22,8 +22,11 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}['\"]"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"-----BEGIN (RSA |EC )?PRIVATE KEY-----"),
-    re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"),  # формат ключа 2ГИС
+    re.compile(
+        r"(?<!docs\.ostrovok\.tech/s/)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+    ),
 ]
+# Исключение: UUID в публичной ссылке на «Правила по технике» организаторов (DEC-32) — не секрет.
 
 
 def tracked_and_candidate_files() -> list[Path]:
@@ -69,7 +72,9 @@ def test_env_example_lists_all_variables_without_values_for_secrets() -> None:
     pairs = dict(line.split("=", 1) for line in lines if line and not line.startswith("#"))
     assert set(pairs) == set(ENV_VARS)
     assert pairs["ODIN_LLM_API_KEY"] == ""
-    assert pairs["ODIN_DATA_MODE"] == "mock" and pairs["ODIN_LLM_MODE"] == "off"
+    # mixed: Live утверждённых провайдеров без ключей, при сбое — маркированный ДЕМО (DEC-23); LLM выключен.
+    assert pairs["ODIN_DATA_MODE"] in ("mock", "mixed") and pairs["ODIN_LLM_MODE"] == "off"
+    assert pairs["ODIN_PORT"] == "8080"
 
 
 @pytest.mark.req("T-DLV-README-01", "DELIVERY-01")
@@ -111,17 +116,27 @@ def test_provider_registry_has_no_unapproved_approval() -> None:
         assert card.get("decision_ref"), card["id"]
 
 
-@pytest.mark.req("DELIVERY-01")
-def test_docker_files_follow_plan() -> None:
+@pytest.mark.req("DELIVERY-01", "DEC-32")
+def test_docker_files_follow_organizer_rules() -> None:
+    """«Правила по технике»: docker-compose.yml в корне, 8080:8080, healthcheck, multi-stage, не root."""
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert dockerfile.startswith("#") and "FROM python:3.12-slim" in dockerfile
-    assert "uv sync --frozen" in dockerfile and "USER odin" in dockerfile and "HEALTHCHECK" in dockerfile
+    assert dockerfile.startswith("#") and "python:3.12.7-slim-bookworm" in dockerfile
+    assert dockerfile.count("FROM ") >= 3 and "AS runtime" in dockerfile  # multi-stage
+    runtime = dockerfile.split("AS runtime", 1)[1]
+    assert "uv sync" not in runtime and "/usr/local/bin/uv" not in runtime  # без dev-инструментов
+    assert "USER odin" in runtime and "HEALTHCHECK" in runtime and "EXPOSE 8080" in runtime
     assert "ODIN_DATA_MODE=mock" in dockerfile and "ODIN_LLM_MODE=off" in dockerfile
-    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
-    assert list(compose["services"]) == ["odin"]
-    assert any("/data" in volume for volume in compose["services"]["odin"]["volumes"])
+    assert ":latest" not in dockerfile
+    assert not (ROOT / "compose.yaml").exists()
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    service = compose["services"]["app"]
+    assert list(compose["services"]) == ["app"]
+    assert service["ports"] == ["8080:8080"]
+    assert service["healthcheck"]["test"][-1] == "odin.healthcheck"
+    assert [item["path"] for item in service["env_file"]] == [".env.example", ".env"]
+    assert any("/data" in volume for volume in service["volumes"])
     check = (ROOT / "docs" / "DOCKER_CHECK.md").read_text(encoding="utf-8")
-    assert "BLOCKED" in check and "/health" in check
+    assert "/health" in check and "docker compose up --build" in check
 
 
 class _Collector(HTMLParser):

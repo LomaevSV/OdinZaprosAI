@@ -1,0 +1,33 @@
+# «О!дин запрос» — запуск: `docker compose up --build` (без дополнительных аргументов), затем http://localhost:8080
+# Один сервис приложения; SQLite и снимки Replay — в томе /data. Зависимых сервисов (БД, кэш) нет.
+# Конфигурация: .env.example (значения по умолчанию, без секретов) и необязательный .env (переопределения, ключ LLM).
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: odin-zapros:0.2.0
+    # platform: linux/amd64   # раскомментировать при сборке на Apple Silicon, если нужна amd64-сборка
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      ODIN_PORT: "8080"
+      ODIN_DB_PATH: /data/odin.sqlite3
+      ODIN_REPLAY_DIR: /data/replay_store
+    ports:
+      - "8080:8080"
+    volumes:
+      - odin-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-m", "odin.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  odin-data:
