@@ -16,6 +16,14 @@
 - Apple Silicon: образ собирается под arm64; при проблемах — раскомментировать `platform: linux/amd64` в Compose.
 
 ## Шаги (из корня репозитория, как у жюри)
+Быстрый путь — скрипт собирает все журналы в `docker_check/` и печатает `RESULT: PASS/FAIL`:
+- Linux/macOS: `sh scripts/docker_check.sh`
+- Windows: `powershell -ExecutionPolicy Bypass -File scripts\docker_check.ps1`
+
+Скрипты проверены только на синтаксис (`bash -n`, парсер PowerShell); в среде разработки Docker 19.03 без Compose v2
+и без работающего демона (25.10) — фактический запуск не выполнялся.
+
+Вручную — те же шаги.
 Linux/macOS (bash) и Windows (PowerShell) — одинаковые команды, кроме отмеченных.
 ```sh
 docker --version
@@ -54,5 +62,6 @@ docker compose down
 | Windows: `curl` выводит таблицу PowerShell | использовать `curl.exe` или открыть адрес в браузере |
 
 ## Что приложить к отчёту
-`docker_up.log`, `docker_run.log`, вывод `docker compose ps`, `diagnose`, `selfcheck`, `docker image ls`,
-версии Docker и ОС, хеш коммита. Без этих журналов статус T-DLV-DOCKER-01 остаётся **BLOCKED**.
+Каталог `docker_check/` целиком (`env.txt`, `docker_up.log`, `ps.txt`, `diagnose.json`, `selfcheck.json`,
+`health.json`, `image.txt`, `docker_run.log`, `result.txt`) или те же выводы, снятые вручную, версии Docker
+и ОС, хеш коммита. Без этих журналов статус T-DLV-DOCKER-01 остаётся **BLOCKED**.

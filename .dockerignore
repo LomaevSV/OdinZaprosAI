@@ -24,3 +24,5 @@ odin_audit_*
 *.patch
 *.diff
 patch_package*
+docker_check
+scripts

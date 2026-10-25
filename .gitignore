@@ -34,6 +34,8 @@ odin_audit_*
 *.orig
 *.rej
 patch_package*/
+# Журналы приёмки Docker (прикладываются к отчёту отдельно)
+docker_check/
 
 # Исходные исследовательские JSON не импортируются (возможен ключ 2ГИС)
 research_raw/
