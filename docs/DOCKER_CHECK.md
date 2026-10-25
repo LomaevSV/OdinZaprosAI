@@ -2,60 +2,57 @@
 
 **Статус на 25.10.2026: готово к проверке, результат — BLOCKED до журнала запуска.** В среде разработки Docker
 недоступен (Docker Toolbox без ВМ, виртуализация выключена — план §1.3). PASS ставится **только** по журналу
-фактического запуска в отдельной среде.
+фактического запуска в отдельной среде. Сама сквозная самопроверка (`python -m odin.selfcheck`) проверена на хосте
+без Docker (локальный сервер, Mock) — это не доказательство работы образа.
 
 ## Требования к среде
-- Docker Engine ≥ 24 и Docker Compose ≥ 2.24 (используется `env_file` с `required: false`).
-- Доступ к `ghcr.io` и `pypi.org` во время сборки; для режима `mixed` — к `mcp.tutu.ru`,
-  `geocoding-api.open-meteo.com`, `router.project-osrm.org` во время работы (без сети — ДЕМО с пометкой).
-- Платные ключи не нужны. Ключ LLM — по желанию, в `.env`.
+- Docker Engine ≥ 24 и Docker Compose ≥ 2.24 (используется `env_file` с `required: false`; на старых версиях
+  Compose — ошибка разбора `env_file`). Docker Desktop на Windows/macOS — с включённой виртуализацией (WSL2 / VM).
+- Свободный порт 8080; ≈ 1 ГБ свободного диска на сборку, 512 МБ RAM.
+- Сеть при сборке: `ghcr.io` (образ uv), `pypi.org`, Docker Hub (`python:3.12.7-slim-bookworm`).
+- Сеть при работе — только в режиме `live`/`mixed`: `mcp.tutu.ru`, `geocoding-api.open-meteo.com`,
+  `router.project-osrm.org` (и адрес LLM, если задан ключ).
+- Ключи не нужны. Без `.env` режим данных `auto` → `mock` (ДЕМО, без сети), LLM выключен.
+- Apple Silicon: образ собирается под arm64; при проблемах — раскомментировать `platform: linux/amd64` в Compose.
 
 ## Шаги (из корня репозитория, как у жюри)
+Linux/macOS (bash) и Windows (PowerShell) — одинаковые команды, кроме отмеченных.
 ```sh
-docker --version && docker compose version
+docker --version
+docker compose version                       # ≥ 2.24
 git rev-parse HEAD
-cp .env.example .env                       # необязательно: compose читает .env.example сам
-docker compose up --build -d 2>&1 | tee docker_up.log
-docker compose ps                           # STATUS: healthy (ожидание до ~30 с)
-curl -fsS http://localhost:8080/health | tee health.json
-curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:8080/   # 200 — интерфейс
-docker image ls odin-zapros:0.2.0           # ориентир размера: ≤ 300 МБ
-```
-Ожидаемо: `health.json` содержит `"status":"ok"`, `"data_mode":"mixed"`, `"llm_mode":"off"`
-(или `live`, если в `.env` задан ключ).
-
-## Сквозной сценарий внутри контейнера
-```sh
-docker compose exec app python - <<'PY'
-import json, urllib.request
-from datetime import date, timedelta
-base = "http://127.0.0.1:8080/api/v1"
-def call(method, path, body=None):
-    req = urllib.request.Request(base + path, method=method,
-        data=None if body is None else json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req, timeout=60))
-start = date.today() + timedelta(days=30)
-s = call("POST", "/sessions")
-form = {"origin": "Москва", "destination": "Казань", "date_from": start.isoformat(),
-        "date_to": (start + timedelta(days=2)).isoformat(), "adults": 2, "return_trip": True}
-t = call("POST", f"/sessions/{s['session_id']}/messages",
-         {"request_id": "req-docker-0001", "trip_revision": 1, "form": form})
-print("plan mode:", t["state"]["plan"]["trip_data_mode"], t["state"]["plan"]["data_mode_breakdown"])
-c = call("POST", f"/trips/{t['trip_id']}/cart", {"request_id": "req-docker-0002", "trip_revision": t["trip_revision"]})
-body = {"request_id": "req-docker-0003", "trip_revision": c["trip_revision"], "confirmation_id": "conf-docker-0001",
-        "purchase_consent": True, "risk_acknowledgement": True}
-r1 = call("POST", f"/carts/{c['cart']['cart_id']}/confirm", body)
-r2 = call("POST", f"/carts/{c['cart']['cart_id']}/confirm", dict(body, request_id="req-docker-0004"))
-assert r1["receipt"]["receipt_id"] == r2["receipt"]["receipt_id"] and r2["idempotent_replay"]
-print("E2E OK", r1["receipt"]["receipt_id"], r1["receipt"]["notice"])
-PY
+docker compose up --build -d                 # журнал: docker compose logs > docker_up.log
+docker compose ps                            # STATUS: (healthy) — ожидание до ~30 с
+docker compose exec app python -m odin.diagnose        # режимы без сети; ключ не выводится
+docker compose exec app python -m odin.selfcheck       # форма → план → корзина → демо-чек → повтор
+curl -fsS http://localhost:8080/health                 # Windows PowerShell: curl.exe -fsS ...
+docker image ls odin-zapros:0.2.0                      # ориентир размера: ≤ 300 МБ
 docker compose logs --no-color app > docker_run.log
 docker compose down
 ```
-Без сети Live-компоненты заменяются ДЕМО по компоненту (`plan mode: mock`/`mixed`) — это ожидаемое поведение
-(DEC-23), сценарий всё равно проходит. Строго Mock: `ODIN_DATA_MODE=mock` в `.env`.
+Ожидаемо:
+- `docker compose ps` — `healthy`;
+- `diagnose` — `"ok": true`, `"data_mode": "mock"`, `"data_mode_auto": true`, `"llm": {"mode": "off", ...}`
+  (с ключом LLM в `.env`: `"data_mode": "live"`, `"mode": "live"`, `"key": "present"`);
+- `selfcheck` — `"result": "PASS"`, `"plan_mode": "mock"` (без ключа), `"idempotent_replay": true`,
+  `"notice": "Демонстрационная покупка. Реального бронирования и списания средств нет"`;
+- `/health` — `"status": "ok"`; `http://localhost:8080/` открывается в браузере.
+
+## Проверка Live-данных в контейнере (по желанию, нужна сеть)
+В `.env`: `ODIN_DATA_MODE=live`, затем `docker compose up -d` и `docker compose exec app python -m odin.selfcheck`.
+Ожидаемо `"plan_mode": "live"`; при недоступности источников план честно неполный (`unknown`), без подмены
+на ДЕМО. Каждый прогон — порядка 10 бесплатных запросов только чтения к Tutu/Open-Meteo/OSRM (поиск в обе
+стороны, гостиницы, детали лучших гостиниц, трансфер).
+
+## Типовые ошибки
+| Симптом | Действие |
+|---|---|
+| `env_file ... required` не распознан | обновить Docker Compose до ≥ 2.24 |
+| `port is already allocated` | освободить 8080 или поменять левую часть `ports` в `docker-compose.yml` |
+| `unhealthy` | `docker compose logs app`; частая причина — `ConfigError` в `.env` (текст называет переменную) |
+| Сборка падает на загрузке пакетов | нет доступа к `ghcr.io`/`pypi.org` — проверить прокси/сеть |
+| Windows: `curl` выводит таблицу PowerShell | использовать `curl.exe` или открыть адрес в браузере |
 
 ## Что приложить к отчёту
-`docker_up.log`, `health.json`, `docker_run.log`, вывод `docker compose ps` и `docker image ls`, версии Docker
-и ОС, хеш коммита. Без этих журналов статус T-DLV-DOCKER-01 остаётся **BLOCKED**.
+`docker_up.log`, `docker_run.log`, вывод `docker compose ps`, `diagnose`, `selfcheck`, `docker image ls`,
+версии Docker и ОС, хеш коммита. Без этих журналов статус T-DLV-DOCKER-01 остаётся **BLOCKED**.

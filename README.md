@@ -71,6 +71,14 @@ ODIN_LLM_API_KEY=<ключ>
 Включение `live` — это разрешение оператора на платные вызовы. Модель только извлекает параметры с дословными
 цитатами из сообщения и переформулирует ответ; даты, цены, условия и наличие проверяет код.
 
+- Вызовов за ход: обычно 2 (Интерпретатор + Composer), не больше `ODIN_LLM_CALLS_PER_TURN` (4: повтор по формату
+  и повтор транспорта). `ODIN_LLM_COMPOSER=false` — 1 вызов за ход, ответ по шаблону.
+- Модель: подойдёт любая быстрая модель с JSON-ответами (ход ограничен `ODIN_LLM_TIMEOUT_S=20`). Для «рассуждающих»
+  моделей, не принимающих `temperature`/`max_tokens`, клиент делает совместимый повтор — это лишний запрос.
+- При настроенной LLM `auto` включает Live-данные. LLM с ДЕМО-данными (без сети Tutu/OSRM): `ODIN_DATA_MODE=mock`.
+- Проверка конфигурации без сети и без платных вызовов (ключ не выводится):
+  `uv run python -m odin.diagnose` (в Docker: `docker compose exec app python -m odin.diagnose`).
+
 **Приватность.** Тексты передаются провайдеру только при `ODIN_LLM_MODE=live`: текущее сообщение и краткие
 условия поездки, без истории переписки. Ключи, e-mail, номера телефонов, карт и документов заменяются на
 `[скрыто]` до отправки, пользователь видит уведомление в интерфейсе (`privacy_notice` в ответе
@@ -117,10 +125,22 @@ uv run ruff check . && uv run ruff format --check .
 uv run python -m odin.contracts.schema_export --check     # снимок JSON Schema
 uv run python -m odin.openapi_snapshot --check            # снимок OpenAPI
 uv run python -m tests.corpus.run_corpus                  # корпус K-01..K-30, отчёт и метрики
-ODIN_RUN_LIVE=1 uv run pytest -m live tests/live          # явные Live-проверки (LLM — платно)
+ODIN_RUN_LIVE=1 uv run pytest tests/live/test_tutu_live_smoke.py -s       # Live Tutu/Open-Meteo/OSRM: бесплатно, ≤ 6 запросов
+ODIN_RUN_LIVE_LLM=1 uv run pytest tests/live/test_llm_live_smoke.py -s   # реальная LLM из .env: ПЛАТНО, ≤ 2 запроса
 ```
 Проверка Docker в отдельной среде — `docs/DOCKER_CHECK.md`; до журнала запуска статус **BLOCKED** (DEC-06).
 Отчёты: `docs/reports/`.
+
+## Диагностика
+| Симптом | Причина и действие |
+|---|---|
+| «Свободный диалог недоступен» | LLM выключен (`ODIN_LLM_MODE=off`) или ошибка провайдера (код в ответе: `auth_401`, `rate_limited`, `timeout`). Проверка: `python -m odin.diagnose`; форма работает без LLM |
+| Приложение не стартует с `ConfigError` | `ODIN_LLM_MODE=live` без ключа/адреса/модели или `http://` для нелокального хоста — текст ошибки называет переменную |
+| Компоненты с пометкой «ДЕМО» | режим `mock` (нет ключа LLM) или явный `mixed` после сбоя Live; в `live` ДЕМО не подставляется |
+| План пустой, «источник недоступен» | нет сети до `mcp.tutu.ru` / Open-Meteo / OSRM; для показа без сети — `ODIN_DATA_MODE=mock` или `replay` |
+| Порт 8080 занят | `ODIN_PORT=8090` (локально) или другой порт слева в `ports` Compose |
+| `docker compose` ругается на `env_file` | нужен Docker Compose ≥ 2.24 (`docker compose version`) |
+| `/health` | режим данных, режим LLM и провайдеры; ход и вызовы — в журнале контейнера (без текстов пользователя) |
 
 ## Структура
 - `src/odin/contracts` — единый набор контрактов, экспорт JSON Schema в `schemas/`;
