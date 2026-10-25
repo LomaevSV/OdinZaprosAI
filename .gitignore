@@ -17,8 +17,23 @@ var/
 *.db-wal
 *.db-shm
 *.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 replay_store/
 *.log
+
+# Материалы аудита, архивы выгрузок и пакеты патчей не входят в поставку (интегрируются только изменения)
+audit_files*
+odin_audit_*
+*.tar.gz
+*.tgz
+*.zip
+*.patch
+*.diff
+*.orig
+*.rej
+patch_package*/
 
 # Исходные исследовательские JSON не импортируются (возможен ключ 2ГИС)
 research_raw/

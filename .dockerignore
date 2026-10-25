@@ -16,3 +16,11 @@ tests
 *.sqlite
 *.sqlite3
 *.log
+audit_files*
+odin_audit_*
+*.tar.gz
+*.tgz
+*.zip
+*.patch
+*.diff
+patch_package*
