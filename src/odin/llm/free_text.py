@@ -64,6 +64,12 @@ class AdultsValue(Spanned):
     value: int = Field(ge=1, le=9)
 
 
+class ChildrenCount(Spanned):
+    """Дети названы без возраста («с ребёнком», «с двумя детьми»): возраст не выдумывается — вопрос."""
+
+    value: int = Field(ge=1, le=8)
+
+
 class AgesValue(Spanned):
     value: list[int] = Field(max_length=8)
 
@@ -138,6 +144,7 @@ class InterpretationDelta(_Delta):
     dates: DatesValue | None = None
     adults: AdultsValue | None = None
     children_ages: AgesValue | None = None
+    children_count: ChildrenCount | None = None
     return_trip: BoolValue | None = None
     transport: TransportValue | None = None
     budget: BudgetValue | None = None
@@ -174,6 +181,14 @@ class DeltaReport:
     questions: list[Ambiguity] = field(default_factory=list)
     date_expressions: list[DateExpression] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Длительность названа раньше даты отъезда («на 3 ночи»): хранится до появления даты (UC-02).
+    pending_nights: str | None = None
+
+
+# Уточнения, которые переносятся между ходами через ``TripRequest.ambiguities`` (UC-02: полученное не теряется).
+NIGHTS_PENDING_ID = "amb-llm-nights"
+CHILDREN_PENDING_ID = "amb-llm-children"
+_CHILD_WORDS = re.compile(r"(ребен|ребён|дет(и|ей|ьми|ям)\b|сын|доч|малыш|младен)", re.IGNORECASE)
 
 
 FIELD_TITLES = {
@@ -182,6 +197,7 @@ FIELD_TITLES = {
     "dates": "даты",
     "adults": "число взрослых",
     "children_ages": "дети",
+    "children_count": "дети",
     "return_trip": "обратный путь",
     "transport": "вид транспорта",
     "budget": "бюджет",
@@ -193,14 +209,50 @@ FIELD_TITLES = {
 }
 
 
-def _question(field_name: str, text: str, span: str | None, blocking: str = "blocking_now") -> Ambiguity:
+def _question(
+    field_name: str,
+    text: str,
+    span: str | None,
+    blocking: str = "blocking_now",
+    ambiguity_id: str | None = None,
+) -> Ambiguity:
     return Ambiguity(
-        ambiguity_id=f"amb-llm-{field_name}",
+        ambiguity_id=ambiguity_id or f"amb-llm-{field_name}",
         field=field_name,
         question=text,
         blocking_class=blocking,  # type: ignore[arg-type]
         source_span=span,
     )
+
+
+def _children_question(span: str | None) -> Ambiguity:
+    shown = f" (упомянуто: «{span}»)" if span else ""
+    return _question(
+        "children_ages",
+        f"Сколько лет каждому ребёнку{shown}? Возраст нужен для билетов и размещения.",
+        span,
+        ambiguity_id=CHILDREN_PENDING_ID,
+    )
+
+
+def _nights_pending_question(phrase: str) -> Ambiguity:
+    return _question(
+        "date_from",
+        f"С какой даты начинается поездка? Длительность «{phrase}» учтена.",
+        phrase,
+        ambiguity_id=NIGHTS_PENDING_ID,
+    )
+
+
+def pending_from(ambiguities: list[Ambiguity] | None) -> tuple[str | None, Ambiguity | None]:
+    """Незакрытые уточнения прошлого хода: (фраза длительности, вопрос о возрасте детей)."""
+    nights, children = None, None
+    for item in ambiguities or []:
+        if item.ambiguity_id == NIGHTS_PENDING_ID and item.source_span:
+            nights = item.source_span
+        elif item.ambiguity_id == CHILDREN_PENDING_ID:
+            children = item
+    return nights, children
 
 
 def apply_delta(
@@ -210,10 +262,12 @@ def apply_delta(
     base: StructuredForm,
     reference_datetime: datetime,
     timezone_for: Callable[[str], str | None] | None = None,
+    previous_ambiguities: list[Ambiguity] | None = None,
 ) -> tuple[StructuredForm, DeltaReport]:
     """Накладывает проверенную дельту на прежние условия. Непроверенное значение не применяется."""
     report = DeltaReport()
     values: dict[str, Any] = base.model_dump()
+    pending_nights, pending_children = pending_from(previous_ambiguities)
 
     def check(name: str, item: Spanned | None) -> bool:
         if item is None:
@@ -249,6 +303,7 @@ def apply_delta(
             values.update(wishes_tags=[])
         elif item.field == "children_ages":
             values.update(children_ages=[])
+            pending_children = None  # «без детей»: вопрос о возрасте снимается
         elif item.field == "return_trip":
             values.update(return_trip=None)
 
@@ -264,6 +319,22 @@ def apply_delta(
     if check("children_ages", delta.children_ages):
         assert delta.children_ages is not None
         values["children_ages"] = list(delta.children_ages.value)
+    # UC-02/DEC-25: состав группы не предполагается. Дети без возраста — блокирующий вопрос, а не план
+    # «без детей»; вопрос переносится между ходами, пока возрасты не названы.
+    children_span: str | None = None
+    if check("children_count", delta.children_count):
+        assert delta.children_count is not None
+        if len(values.get("children_ages") or []) < delta.children_count.value:
+            children_span = delta.children_count.span
+    if children_span is None and not values.get("children_ages"):
+        for fragment in delta.unparsed:
+            if _CHILD_WORDS.search(fragment) and span_in_text(fragment, text):
+                children_span = fragment.strip()[:300]
+                break
+    if children_span is not None:
+        report.questions.append(_children_question(children_span))
+    elif pending_children is not None and not values.get("children_ages"):
+        report.questions.append(pending_children)
     if check("return_trip", delta.return_trip):
         assert delta.return_trip is not None
         values["return_trip"] = delta.return_trip.value
@@ -312,8 +383,11 @@ def apply_delta(
         report=report,
         resolver=timezone_for,
     )
+    _apply_pending_nights(report.pending_nights or pending_nights, values=values, report=report)
 
     for fragment in delta.unparsed:
+        if fragment.strip()[:300] == children_span:
+            continue  # фрагмент о детях стал вопросом о возрасте
         if span_in_text(fragment, text) and fragment not in report.unparsed:
             report.unparsed.append(fragment.strip()[:300])
 
@@ -359,9 +433,15 @@ def _apply_dates(
     resolver: Callable[[str], str | None] | None = None,
 ) -> None:
     if dates is None or not dates.date_phrase:
-        if dates is not None and dates.nights_phrase and values.get("date_from") is not None:
-            # «давай на 4 ночи» при уже известной дате отъезда
-            _apply_nights_only(dates.nights_phrase, text=text, values=values, report=report)
+        if dates is not None and dates.nights_phrase:
+            if values.get("date_from") is not None:
+                # «давай на 4 ночи» при уже известной дате отъезда
+                _apply_nights_only(dates.nights_phrase, text=text, values=values, report=report)
+            elif span_in_text(dates.nights_phrase, text) and calendar.nights_value(dates.nights_phrase)[0]:
+                # «на 3 ночи» без даты отъезда: длительность сохраняется до появления даты (UC-02)
+                report.pending_nights = dates.nights_phrase.strip()
+            else:
+                report.rejected.append("nights")
         return
     if not span_in_text(dates.date_phrase, text):
         report.rejected.append("dates")
@@ -401,6 +481,25 @@ def _apply_dates(
     )
 
 
+def _apply_pending_nights(phrase: str | None, *, values: dict[str, Any], report: DeltaReport) -> None:
+    """Длительность из прошлого (или текущего) хода применяется, как только известна дата отъезда."""
+    report.pending_nights = None
+    if not phrase:
+        return
+    nights, _status, _rule = calendar.nights_value(phrase)
+    if not nights:
+        return
+    if values.get("date_from") is None:
+        report.pending_nights = phrase
+        report.questions = [q for q in report.questions if q.field not in ("date_from", "date_to")]
+        report.questions.append(_nights_pending_question(phrase))
+        return
+    if values.get("date_to") is None:
+        values["date_to"] = values["date_from"] + timedelta(days=nights)
+        report.questions = [q for q in report.questions if q.field not in ("date_from", "date_to")]
+        report.accepted.append("nights")
+
+
 def _apply_nights_only(phrase: str, *, text: str, values: dict[str, Any], report: DeltaReport) -> None:
     if not span_in_text(phrase, text):
         report.rejected.append("nights")
@@ -436,6 +535,7 @@ def outcome_from_delta(
     mode: Literal["free_text_llm", "free_text_replay"],
     previous_constraints: list[Constraint] | None = None,
     timezone_for: Callable[[str], str | None] | None = None,
+    previous_ambiguities: list[Ambiguity] | None = None,
 ) -> InterpretationOutcome:
     """Полный путь: проверка фрагментов → календарь → форма → ``TripRequest`` → вопросы UC-02."""
     previous_spans = {
@@ -443,7 +543,12 @@ def outcome_from_delta(
         for constraint in previous_constraints or []
     }
     form, report = apply_delta(
-        delta, text=text, base=base, reference_datetime=reference_datetime, timezone_for=timezone_for
+        delta,
+        text=text,
+        base=base,
+        reference_datetime=reference_datetime,
+        timezone_for=timezone_for,
+        previous_ambiguities=previous_ambiguities,
     )
     outcome = interpret_structured_form(
         form,
@@ -454,11 +559,10 @@ def outcome_from_delta(
     )
     assert outcome.request is not None
     # Вопросы календаря заменяют общий вопрос о датах (точнее и со ссылкой на фразу).
-    calendar_fields = {question.field for question in report.questions}
+    date_fields = {"date_from", "date_to"}
+    calendar_dates = bool({question.field for question in report.questions} & date_fields)
     questions = [
-        question
-        for question in outcome.questions
-        if not (calendar_fields and question.field in ("date_from", "date_to"))
+        question for question in outcome.questions if not (calendar_dates and question.field in date_fields)
     ]
     questions = [*report.questions, *questions]
     groups = [
@@ -538,3 +642,21 @@ def summarize_context(form: StructuredForm) -> dict[str, Any]:
     """Текущие условия поездки для LLM (только поля поездки, без служебных данных)."""
     data = form.model_dump(mode="json", exclude_defaults=True)
     return {key: value for key, value in data.items() if value not in (None, [], False)}
+
+
+_AWAITING_TITLES = {
+    "origin": "город отправления",
+    "destination": "направление",
+    "date_from": "дата отъезда",
+    "date_to": "дата возвращения или число ночей",
+    "adults": "число взрослых",
+    "children_ages": "возраст детей",
+    "return_trip": "нужен ли обратный путь",
+    "budget": "бюджет",
+}
+
+
+def awaiting_fields(ambiguities: list[Ambiguity]) -> list[str]:
+    """Названия полей, по которым задан вопрос (без текста вопросов и цитат — минимизация данных)."""
+    titles = [_AWAITING_TITLES.get(item.field, item.field) for item in ambiguities]
+    return list(dict.fromkeys(titles))[:6]

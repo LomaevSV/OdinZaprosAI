@@ -336,7 +336,7 @@ def test_live_plan_then_offline_replay_reproduces_it(make_client: Any) -> None:
     hotel = next(item for item in state["hotels"] if item["hotel_id"] == "TUTU-H-900000")
     assert hotel["check_in_from"] == "14:00:00"
     if roles["hotel"]["offer_id"].startswith("TUTU-HD-"):
-        assert "наличие (hotel) не подтверждено источником" not in plan["unknowns"]
+        assert "наличие (гостиница) не подтверждено источником" not in plan["unknowns"]
     health = live.get("/health").json()
     enabled = {item["provider_id"] for item in health["providers"] if item["live_enabled"]}
     assert enabled == {"tutu_mcp", "open_meteo", "osrm_demo"}

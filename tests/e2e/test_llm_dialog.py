@@ -224,3 +224,132 @@ def test_llm_receives_only_redacted_current_message_and_user_is_notified(
     interpreter_calls = [request for request in fake.requests if "«Интерпретатор»" in request[0]["content"]]
     last_user = interpreter_calls[-1][-1]["content"]
     assert second["status"] == "planned" and FULL not in last_user  # без истории: только текущее сообщение
+
+
+BASE = {
+    "origin": {"value": "Москва", "span": "из Москвы"},
+    "destination": {"value": "Казань", "span": "в Казань"},
+    "dates": {"date_phrase": DATES},
+    "return_trip": {"value": True, "span": "туда и обратно"},
+}
+
+
+def _scripted_client(tmp_path: Path, script: dict[str, Any]) -> Any:
+    from fastapi.testclient import TestClient
+
+    from odin.api import create_app
+
+    fake = ScriptedLlm(script)
+    settings = Settings.from_env({**LIVE_ENV, "ODIN_DB_PATH": str(tmp_path / "odin.sqlite3")})
+    application = build_application(settings, llm_client_factory=lambda _: fake)
+    return TestClient(create_app(settings, application=application)), fake
+
+
+@pytest.mark.req("UC-02", "DEC-25", "T-E2E-LLM-03")
+def test_child_without_age_blocks_plan_until_age_is_given(tmp_path: Path) -> None:
+    """Состав группы не предполагается: «с ребёнком» без возраста — вопрос, а не план на одного взрослого."""
+    first = f"Хочу из Москвы в Казань {DATES} с ребёнком, туда и обратно, я одна"
+    fallback = f"Хочу из Москвы в Казань {DATES} вдвоём и с малышом, туда и обратно"
+    script = {
+        first: {
+            **BASE,
+            "adults": {"value": 1, "span": "я одна"},
+            "children_count": {"value": 1, "span": "с ребёнком"},
+        },
+        fallback: {**BASE, "adults": {"value": 2, "span": "вдвоём"}, "unparsed": ["с малышом"]},
+        "Не самолётом": {"transport": {"exclude": ["flight"], "required": True, "span": "Не самолётом"}},
+        "Ему 7 лет": {"children_ages": {"value": [7], "span": "7 лет"}},
+    }
+    client, fake = _scripted_client(tmp_path, script)
+    with client:
+        session = client.post("/api/v1/sessions").json()
+        turn = _say(client, session, first, session["trip_revision"], 60)
+        assert turn["status"] == "awaiting_clarification" and turn["state"]["plan"] is None
+        assert [q["field"] for q in turn["questions"]] == ["children_ages"]
+        answered = _say(client, session, "Ему 7 лет", turn["trip_revision"], 61)
+        assert answered["status"] == "planned", answered["assistant_text"]
+        assert answered["state"]["request"]["party"] == {
+            **answered["state"]["request"]["party"],
+            "children_ages": [7],
+        }
+        assert "awaiting_answers" in fake.requests[-2][1]["content"]  # модель знает, на что ответ
+
+        other = client.post("/api/v1/sessions").json()
+        turn = _say(client, other, fallback, other["trip_revision"], 62)
+        assert turn["status"] == "awaiting_clarification"
+        assert "с малышом" in turn["questions"][0]["question"]
+        # Ответ не про детей: вопрос о возрасте не теряется, план не строится.
+        kept = _say(client, other, "Не самолётом", turn["trip_revision"], 63)
+        assert kept["status"] == "awaiting_clarification"
+        assert [q["field"] for q in kept["questions"]] == ["children_ages"]
+
+
+@pytest.mark.req("UC-02", "INTERPRET-02", "T-E2E-LLM-04")
+def test_nights_named_before_date_are_kept_until_departure_is_known(tmp_path: Path) -> None:
+    first = "Хочу в Казань из Москвы на 2 ночи вдвоём, туда и обратно"
+    answer = f"Выезд {ru_date(TRIP_START)}"
+    script = {
+        first: {
+            "origin": {"value": "Москва", "span": "из Москвы"},
+            "destination": {"value": "Казань", "span": "в Казань"},
+            "dates": {"date_phrase": None, "nights_phrase": "на 2 ночи"},
+            "adults": {"value": 2, "span": "вдвоём"},
+            "return_trip": {"value": True, "span": "туда и обратно"},
+        },
+        answer: {"dates": {"date_phrase": ru_date(TRIP_START)}},
+    }
+    client, _ = _scripted_client(tmp_path, script)
+    with client:
+        session = client.post("/api/v1/sessions").json()
+        turn = _say(client, session, first, session["trip_revision"], 70)
+        assert turn["status"] == "awaiting_clarification"
+        assert "на 2 ночи" in turn["questions"][0]["question"]
+        planned = _say(client, session, answer, turn["trip_revision"], 71)
+        assert planned["status"] == "planned", planned["assistant_text"]
+        assert planned["state"]["request"]["date_range"]["start"] == TRIP_START.isoformat()
+        assert planned["state"]["request"]["date_range"]["end"] == TRIP_END.isoformat()
+
+
+@pytest.mark.req("RANK-01", "DEC-26", "UC-06", "T-E2E-LLM-05")
+def test_required_budget_is_checked_on_combination_and_answer_shows_plan(tmp_path: Path) -> None:
+    """Обязательный бюджет — условие комбинации: если укладывающаяся комбинация есть, она и выбирается."""
+    from decimal import Decimal
+
+    text = f"Хочу из Москвы в Казань {DATES} вдвоём, туда и обратно, без завтрака, не дороже 30000 рублей"
+    delta = {
+        **BASE,
+        "adults": {"value": 2, "span": "вдвоём"},
+        "breakfast": {"value": False, "required": True, "span": "без завтрака"},
+        "budget": {"amount": "30000", "currency": "RUB", "required": True, "span": "не дороже 30000 рублей"},
+    }
+    client, _ = _scripted_client(tmp_path, {text: delta})
+    with client:
+        session = client.post("/api/v1/sessions").json()
+        turn = _say(client, session, text, session["trip_revision"], 80)
+    assert turn["status"] == "planned", turn["assistant_text"]
+    state = turn["state"]
+
+    def cheapest(offers: list[dict[str, Any]], key: str, direction: str | None = None) -> Decimal:
+        return min(
+            Decimal(offer[key]["amount"])
+            for offer in offers
+            if offer[key]["amount"] is not None and (direction is None or offer["direction"] == direction)
+        )
+
+    no_breakfast = [o for o in state["hotel_offers"] if o["terms"]["breakfast_included"] is False]
+    floor = (
+        cheapest(state["transport_offers"], "price", "outbound")
+        + cheapest(state["transport_offers"], "price", "return")
+        + cheapest(no_breakfast, "price_total")
+    )
+    total = Decimal(state["plan"]["total_price"]["amount"])
+    if floor <= Decimal("30000"):
+        assert total <= Decimal("30000"), (total, floor)
+        budget = [
+            e for e in state["plan"]["constraint_evaluations"] if e["constraint_id"] == "c-budget_total"
+        ]
+        assert budget and budget[0]["status"] != "violated"
+    text_out = turn["assistant_text"]
+    assert "Выбрано:" in text_out and "— Туда:" in text_out and "— Гостиница:" in text_out
+    assert "без завтрака (обязательно) — выполнено" in text_out
+    assert "sources_exhausted" not in text_out and "(hotel)" not in text_out

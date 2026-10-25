@@ -125,7 +125,8 @@ def test_assumptions_are_shown_next_to_the_sum() -> None:
     text = compose_answer(ComposerFacts(**base))
     lines = text.splitlines()
     total_index = next(i for i, line in enumerate(lines) if line.startswith("Итог:"))
-    assert "Допущений в расчёте нет" in lines[total_index + 2]
+    assert "известна частично" in lines[total_index]  # полнота — в строке итога
+    assert "Допущений в расчёте нет" in lines[total_index + 1]
 
     assumption = Assumption(
         assumption_id="as-1",
@@ -139,7 +140,7 @@ def test_assumptions_are_shown_next_to_the_sum() -> None:
     text, verified = safe_answer(ComposerFacts(**base, assumptions=(shown,)))
     lines = text.splitlines()
     total_index = next(i for i, line in enumerate(lines) if line.startswith("Итог:"))
-    assert verified and lines[total_index + 2].startswith("Допущения расчёта: nights: 2")
+    assert verified and lines[total_index + 1].startswith("Допущения расчёта: nights: 2")
 
 
 # --------------------------------------------------------------------- REPLAN-01: таблица и детектор

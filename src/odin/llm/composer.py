@@ -39,6 +39,9 @@ class ComposerFacts:
     assumptions: tuple[str, ...] = field(default=())
     # Нарушенные условия (UC-06, UC-10: превышение бюджета видно, а не скрыто).
     violations: tuple[str, ...] = field(default=())
+    # Состав выбранного плана и статус каждого условия пользователя (UC-05/06: что выбрано и почему).
+    selected: tuple[str, ...] = field(default=())
+    conditions: tuple[str, ...] = field(default=())
 
     def numeric_values(self) -> set[str]:
         """Все числа, которые разрешено упоминать в тексте."""
@@ -73,6 +76,22 @@ COMPLETENESS_TEXT = {
     "unknown": "стоимость неизвестна",
 }
 
+# Причины остановки поиска человеческим языком (код остаётся в API и журнале).
+STOP_REASON_TEXT = {
+    "sufficient_results": "найдено достаточно вариантов",
+    "sources_exhausted": "опрошены все подключённые источники",
+    "limits_exhausted": "исчерпан лимит запросов на ход",
+    "deadline": "истекло время на ход",
+    "provider_unavailable": "источник данных недоступен",
+    "user_stopped": "остановлен пользователем",
+    "blocked_by_decision": "источник не разрешён к использованию",
+}
+
+
+def _sentence(text: str) -> str:
+    text = text.strip().rstrip(".")
+    return (text[:1].upper() + text[1:] + ".") if text else ""
+
 
 def _money(amount: str | None, currency: str | None) -> str:
     if amount is None:
@@ -86,7 +105,7 @@ def _money(amount: str | None, currency: str | None) -> str:
 
 def compose_answer(facts: ComposerFacts) -> str:
     """Шаблонный ответ по таблице фактов. Все числа берутся только из слотов."""
-    parts: list[str] = [note.rstrip(".") + "." for note in facts.notes]
+    parts: list[str] = [_sentence(note) for note in facts.notes if note.strip()]
     if facts.questions:
         parts.append("Нужно уточнить: " + " ".join(facts.questions))
         return "\n".join(parts)
@@ -117,14 +136,20 @@ def compose_answer(facts: ComposerFacts) -> str:
         if facts.offers_count is not None:
             parts.append(f"Найдено вариантов: {facts.offers_count}.")
         if facts.known_amount is not None or facts.completeness is not None:
-            parts.append(f"Итог: {_money(facts.known_amount, facts.currency)}.")
+            total = f"Итог: {_money(facts.known_amount, facts.currency)}"
             if facts.completeness:
-                parts.append(COMPLETENESS_TEXT.get(facts.completeness, facts.completeness) + ".")
+                total += " — " + COMPLETENESS_TEXT.get(facts.completeness, facts.completeness)
+            parts.append(total + ".")
             # UC-03: допущения показываются рядом с суммой; без допущений — так и сказано.
             if facts.assumptions:
                 parts.append("Допущения расчёта: " + "; ".join(facts.assumptions) + ".")
             else:
                 parts.append("Допущений в расчёте нет: использованы только ваши данные.")
+        if facts.selected:
+            parts.append("Выбрано:")
+            parts.extend(f"— {entry}" for entry in facts.selected)
+        if facts.conditions:
+            parts.append("Ваши условия: " + "; ".join(facts.conditions) + ".")
     elif not facts.notes:
         parts.append("Данных для плана пока нет.")
 
@@ -133,7 +158,8 @@ def compose_answer(facts: ComposerFacts) -> str:
     if facts.unknowns:
         parts.append("Не подтверждено: " + "; ".join(facts.unknowns) + ".")
     if facts.stop_reason:
-        parts.append(f"Поиск остановлен: {facts.stop_reason}. Это не означает, что вариантов нет.")
+        reason = STOP_REASON_TEXT.get(facts.stop_reason, facts.stop_reason)
+        parts.append(f"Поиск завершён: {reason}. Это не означает, что вариантов нет.")
     parts.append(facts.mode_note + ".")
     return "\n".join(parts)
 

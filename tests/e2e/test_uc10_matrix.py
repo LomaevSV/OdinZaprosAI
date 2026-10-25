@@ -80,7 +80,7 @@ def test_unexpected_request_gives_limited_answer_or_question(
     elif case == "tool_error":
         plan = state["plan"]
         assert "hotel" not in {c["role"] for c in plan["components"]}
-        assert "компонент «hotel» не найден" in plan["unknowns"]
+        assert "компонент «гостиница» не найден" in plan["unknowns"]
         assert plan["completeness"] != "complete" and plan["fully_agreed"] is False
         assert state["search_termination"]["reason"] == "provider_unavailable"
         assert "не означает, что вариантов нет" in text

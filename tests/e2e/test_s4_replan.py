@@ -385,7 +385,7 @@ def test_stale_selected_offer_is_not_carried_as_active(
     observed = datetime.fromisoformat(hotel["validity"]["observed_at"])
     assert observed > datetime.fromisoformat(turn["state"]["hotel_offers"][0]["validity"]["observed_at"])
     assert state["selected_components"]["hotel"] == chosen, "выбор сохранён только после перепроверки"
-    assert "перепроверены и сохранены выбранные вами — hotel" in result["assistant_text"]
+    assert "Перепроверены и сохранены выбранные вами — гостиница" in result["assistant_text"]
 
 
 # --------------------------------------------------------------------- диалог и перехват вызовов

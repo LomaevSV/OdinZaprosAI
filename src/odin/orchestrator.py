@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from odin.config import Limits, Settings
@@ -52,6 +53,7 @@ from odin.core.trip import (
 from odin.llm.composer import ComposerFacts, check_rewrite, facts_payload, money_text, safe_answer
 from odin.llm.free_text import (
     INTERPRETER_SCHEMA_VERSION,
+    awaiting_fields,
     outcome_from_delta,
     parse_delta,
     summarize_context,
@@ -100,6 +102,140 @@ MODE_NOTES = {
     "live": "Данные Tutu/Open-Meteo/OSRM на момент запроса; наличие и итоговая цена подтверждаются при оформлении",
     "replay": "Replay: данные сохранённого снимка, не текущие цены",
 }
+
+
+ROLE_TITLES = {
+    "outbound": "туда",
+    "return": "обратно",
+    "hotel": "гостиница",
+    "transfer_in": "трансфер к гостинице",
+    "transfer_out": "трансфер от гостиницы",
+}
+_KIND_TITLES = {"rail": "поезд", "flight": "самолёт"}
+_SCOPE_TEXT = {
+    "per_seat": "за место",
+    "per_person": "за человека",
+    "party_total": "за группу",
+    "stay_total": "за весь срок",
+    "per_room_stay": "за номер на весь срок",
+    "per_night": "за ночь",
+    "trip_total": "за поездку",
+}
+_EVAL_RANK = {"violated": 3, "unknown": 2, "matched": 1}
+_EVAL_TEXT = {"violated": "нарушено", "unknown": "не подтверждено источником", "matched": "выполнено"}
+
+
+def _role_title(role: str) -> str:
+    return ROLE_TITLES.get(role, role)
+
+
+def _adults_text(adults: int) -> str:
+    return f"{adults} взрослый" if adults % 10 == 1 and adults % 100 != 11 else f"{adults} взрослых"
+
+
+def _price_text(price: Any) -> str:
+    if price is None or price.amount is None:
+        return "цена неизвестна"
+    scope = _SCOPE_TEXT.get(price.price_scope, "")
+    partial = "" if price.total_completeness == "complete" else ", без сборов при оформлении"
+    return f"{money_text(price.amount, price.currency)} {scope}".strip() + partial
+
+
+def _constraint_label(constraint: Any, currency: str | None = None, *, mark_required: bool = True) -> str:
+    """Условие пользователя словами (для ответа и списка неподтверждённого)."""
+    value = constraint.value
+    field_name = constraint.field
+    if field_name == "budget_total":
+        try:
+            label = f"бюджет до {money_text(Decimal(str(value)), currency or 'RUB')}"
+        except (InvalidOperation, ValueError):
+            label = "бюджет"
+    elif field_name == "transport_mode":
+        modes = value if isinstance(value, list) else [value]
+        names = ", ".join(_KIND_TITLES.get(str(mode), str(mode)) for mode in modes)
+        label = f"транспорт: {'кроме ' if constraint.operator == 'not_in' else ''}{names}"
+    elif field_name == "hotel_breakfast":
+        label = "с завтраком" if value else "без завтрака"
+    elif field_name == "hotel_stars_min":
+        label = f"гостиница от {value}★"
+    elif field_name == "hotel_free_cancellation":
+        label = "бесплатная отмена" if value else "без требования бесплатной отмены"
+    elif field_name == "pets":
+        label = "размещение и проезд с животным"
+    else:
+        label = str(field_name)
+    return label + (" (обязательно)" if mark_required and constraint.requiredness == "required" else "")
+
+
+def _offer_price(offer: Any) -> Any:
+    return offer.price_total if hasattr(offer, "price_total") else offer.price
+
+
+def _fit_required_budget(
+    selected: dict[str, tuple[Any, list[ConstraintEvaluation], int]],
+    ranked: dict[str, list[tuple[Any, list[ConstraintEvaluation], int]]],
+    request: TripRequest,
+) -> dict[str, tuple[Any, list[ConstraintEvaluation], int]]:
+    """RANK-01 на уровне плана: обязательный бюджет (область trip_total) — условие комбинации.
+
+    Если известная часть итога выбранной комбинации больше обязательного бюджета, ищется комбинация,
+    которая в него укладывается. Кандидаты — только того же класса RANK-01, что лучший для роли
+    (цена не поднимает класс, DEC-26), явные выборы пользователя не заменяются, валюты не смешиваются
+    (DEC-17). Из подходящих берётся ближайшая к исходному порядку ранжирования, затем более дешёвая.
+    """
+    constraint = next((c for c in request.constraints if c.field == "budget_total"), None)
+    if constraint is None or constraint.requiredness != "required" or request.budget is None or not ranked:
+        return selected
+    limit, currency = Decimal(str(request.budget.amount)), request.budget.currency
+
+    def amount(offer: Any) -> Decimal | None:
+        price = _offer_price(offer)
+        if price is None or price.amount is None or price.currency != currency:
+            return None
+        return Decimal(str(price.amount))
+
+    fixed_total = Decimal("0")
+    for role, (offer, _, _) in selected.items():
+        if role in ranked:
+            continue
+        value = amount(offer)
+        if value is None:
+            return selected
+        fixed_total += value
+    current = [amount(selected[role][0]) for role in ranked]
+    if any(value is None for value in current) or fixed_total + sum(current) <= limit:  # type: ignore[arg-type]
+        return selected
+
+    options: dict[str, list[tuple[int, Decimal, tuple[Any, list[ConstraintEvaluation], int]]]] = {}
+    for role, items in ranked.items():
+        best_class = items[0][2]
+        options[role] = [
+            (position, value, item)
+            for position, item in enumerate(items)
+            if item[2] == best_class and (value := amount(item[0])) is not None
+        ][:20]
+        if not options[role]:
+            return selected
+    best: tuple[int, Decimal, dict[str, Any]] | None = None
+    roles = list(options)
+
+    def walk(index: int, positions: int, total: Decimal, chosen: dict[str, Any]) -> None:
+        nonlocal best
+        if fixed_total + total > limit:
+            return
+        if index == len(roles):
+            if best is None or (positions, total) < (best[0], best[1]):
+                best = (positions, total, dict(chosen))
+            return
+        for position, value, item in options[roles[index]]:
+            chosen[roles[index]] = item
+            walk(index + 1, positions + position, total + value, chosen)
+        chosen.pop(roles[index], None)
+
+    walk(0, 0, Decimal("0"), {})
+    if best is None:
+        return selected  # укладывающейся комбинации нет: нарушение будет видно в плане (UC-06)
+    return {**selected, **best[2]}
 
 
 def _candidate_line(candidate: Any) -> str:
@@ -476,6 +612,12 @@ class Orchestrator:
         known = previous is not None and previous.request is not None
         base = request_to_form(previous.request) if known else StructuredForm()  # type: ignore[union-attr]
         context = summarize_context(base) if known else None
+        if known and previous is not None and previous.status == "awaiting_clarification":
+            # Модели — только названия ожидаемых полей (без истории переписки): короткий ответ «двое»
+            # или «5 и 8 лет» понимается как ответ на заданный вопрос.
+            awaiting = awaiting_fields(previous.request.ambiguities)  # type: ignore[union-attr]
+            if awaiting:
+                context = {**(context or {}), "awaiting_answers": awaiting}
         result = self.llm.complete_structured(
             role="interpreter",
             text=text,
@@ -525,6 +667,7 @@ class Orchestrator:
             mode=mode,  # type: ignore[arg-type]
             previous_constraints=list(previous.request.constraints) if known else None,  # type: ignore[union-attr]
             timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
+            previous_ambiguities=list(previous.request.ambiguities) if known else None,  # type: ignore[union-attr]
         )
         if mode == "free_text_replay":
             outcome = replace(outcome, notes=[*outcome.notes, *result.uncertainties])
@@ -1053,13 +1196,20 @@ class Orchestrator:
             )
 
         selected: dict[str, tuple[Any, list[ConstraintEvaluation], int]] = {}
+        ranked: dict[str, list[tuple[Any, list[ConstraintEvaluation], int]]] = {}
         for role, items in candidates.items():
             keys = {cid: rank_key(cid, aggregate_statuses(evals), required_ids) for cid, _, evals in items}
+            by_id = {cid: (o, e) for cid, o, e in items}
+            order = sort_by_rank(keys.values())
+            ranked[role] = [(*by_id[k.canonical_id], k.rank_class) for k in order]
             chosen_id = state.selected_components.get(role)
             if chosen_id not in keys:
-                chosen_id = sort_by_rank(keys.values())[0].canonical_id
-            offer, evals = next((o, e) for cid, o, e in items if cid == chosen_id)
+                chosen_id = order[0].canonical_id
+            else:
+                ranked.pop(role)  # явный выбор пользователя не заменяется ради бюджета
+            offer, evals = by_id[chosen_id]
             selected[role] = (offer, evals, keys[chosen_id].rank_class)
+        selected = _fit_required_budget(selected, ranked, request)
 
         # Бюджет поездки оценивается по итогу плана, а не по отдельным компонентам.
         evaluations = [
@@ -1152,17 +1302,24 @@ class Orchestrator:
             unknowns.append("стоимость трансфера не подтверждена")
         for role, (offer, _, _) in selected.items():
             if judge_availability(offer.availability).status != "available":
-                unknowns.append(f"наличие ({role}) не подтверждено источником")
+                unknowns.append(f"наличие ({_role_title(role)}) не подтверждено источником")
         for role in ("hotel", "outbound"):
             if role not in selected:
-                unknowns.append(f"компонент «{role}» не найден")
+                unknowns.append(f"компонент «{_role_title(role)}» не найден")
         if request.return_trip and "return" not in selected:
-            unknowns.append("компонент «return» не найден")
+            unknowns.append(f"компонент «{_role_title('return')}» не найден")
 
         # COVERAGE-01: у каждого применимого условия есть оценка; потерянные условия видимы пользователю.
         report = coverage(request.constraints, evaluations)
-        unknowns.extend(f"условие {cid} не оценено" for cid in report.missing)
-        unknowns.extend(f"обязательное условие {cid} не подтверждено" for cid in report.unknown_required)
+        currency = request.budget.currency if request.budget else None
+        labels = {
+            c.constraint_id: _constraint_label(c, currency, mark_required=False) for c in request.constraints
+        }
+        unknowns.extend(f"условие «{labels.get(cid, cid)}» не оценено" for cid in report.missing)
+        unknowns.extend(
+            f"обязательное условие «{labels.get(cid, cid)}» не подтверждено"
+            for cid in report.unknown_required
+        )
         constraint_ids = [c.constraint_id for c in request.constraints]
         tradeoff_rows = [
             row.text()
@@ -1523,7 +1680,10 @@ class Orchestrator:
         groups = changed_groups(changes) if changes else []
         notes = [
             "Пересборка: изменено — " + (", ".join(groups) if groups else "ничего"),
-            "заново проверены — " + (", ".join(roles) if roles else "оценки и итог без нового поиска"),
+            "заново проверены — "
+            + (
+                ", ".join(_role_title(role) for role in roles) if roles else "оценки и итог без нового поиска"
+            ),
         ]
         if not roles and any_stale:
             notes[1] = "заново проверены — все компоненты: найденные предложения устарели (DEC-21)"
@@ -1534,11 +1694,16 @@ class Orchestrator:
         rechecked = [role for role, offer_id in recheck.items() if selected.get(role) == offer_id]
         stale_dropped = [role for role in recheck if role not in rechecked]
         if kept:
-            notes.append("сохранены выбранные вами — " + ", ".join(sorted(kept)))
+            notes.append("сохранены выбранные вами — " + ", ".join(_role_title(r) for r in sorted(kept)))
         if rechecked:
-            notes.append("перепроверены и сохранены выбранные вами — " + ", ".join(rechecked))
+            notes.append(
+                "перепроверены и сохранены выбранные вами — " + ", ".join(map(_role_title, rechecked))
+            )
         if stale_dropped:
-            notes.append("устаревшие предложения не перенесены как действующие — " + ", ".join(stale_dropped))
+            notes.append(
+                "устаревшие предложения не перенесены как действующие — "
+                + ", ".join(map(_role_title, stale_dropped))
+            )
         if draft.state.plan is not None and draft.state.plan.components and not outcome.questions:
             text_notes = tuple(outcome.notes) if outcome.mode in ("free_text_llm", "free_text_replay") else ()
             text_out, verified = self._answer(
@@ -1826,7 +1991,7 @@ class Orchestrator:
         party = None
         if request.party.adults:
             children = request.party.children_ages
-            party = f"{request.party.adults} взрослых" + (
+            party = _adults_text(request.party.adults) + (
                 f", дети: {', '.join(str(age) for age in children)}" if children else ""
             )
         amount = plan.total_price.amount
@@ -1855,7 +2020,73 @@ class Orchestrator:
                 if assumption.shown_with_price
             ),
             mode_note=MODE_NOTES.get(plan.trip_data_mode, MODE_NOTES["mock"]),
+            selected=self._selected_lines(state),
+            conditions=self._condition_lines(state),
         )
+
+    def _selected_lines(self, state: TripState) -> tuple[str, ...]:
+        """Состав плана словами: что выбрано, когда и за сколько (только данные предложений)."""
+        assert state.plan is not None
+        hotels = {hotel.hotel_id: hotel for hotel in state.hotels}
+        order = {role: index for index, role in enumerate(ROLE_TITLES)}
+        lines: list[str] = []
+        for component in sorted(state.plan.components, key=lambda c: order.get(c.role, 99)):
+            offer = self._offer_by_id(state, component.offer_id)
+            title = _role_title(component.role).capitalize()
+            mark = " [ДЕМО]" if component.data_mode == "mock" else ""
+            if offer is None:
+                lines.append(f"{title}: {component.title}{mark}")
+            elif component.role == "hotel":
+                hotel = hotels.get(offer.hotel_id)
+                name = hotel.name if hotel else component.title
+                stars = f" {hotel.star_rating}★" if hotel and hotel.star_rating else ""
+                breakfast = {True: "с завтраком", False: "без завтрака"}.get(
+                    offer.terms.breakfast_included, "завтрак не подтверждён"
+                )
+                lines.append(
+                    f"{title}: {name}{stars}{mark}; {offer.check_in:%d.%m}–{offer.check_out:%d.%m}; "
+                    f"{breakfast}; {_price_text(offer.price_total)}"
+                )
+            elif component.role in ("outbound", "return"):
+                kind = _KIND_TITLES.get(offer.kind, offer.kind)
+                when = ""
+                if offer.departure_at and offer.arrival_at:
+                    when = (
+                        f"; отправление {offer.departure_at:%d.%m} в {offer.departure_at:%H:%M}, "
+                        f"прибытие {offer.arrival_at:%d.%m} в {offer.arrival_at:%H:%M} (местное время)"
+                    )
+                lines.append(f"{title}: {kind} {offer.title}{mark}{when}; {_price_text(offer.price)}")
+            else:
+                minutes = f"; около {offer.duration_minutes} мин (оценка)" if offer.duration_minutes else ""
+                lines.append(f"{title}: {offer.title}{mark}{minutes}; стоимость не оценивается")
+        return tuple(lines)
+
+    def _condition_lines(self, state: TripState) -> tuple[str, ...]:
+        """Статус каждого условия пользователя по выбранным компонентам: худший из применимых."""
+        assert state.plan is not None and state.request is not None
+        worst: dict[str, str] = {}
+        for evaluation in state.plan.constraint_evaluations:
+            if evaluation.status not in _EVAL_RANK:
+                continue
+            current = worst.get(evaluation.constraint_id)
+            if current is None or _EVAL_RANK[evaluation.status] > _EVAL_RANK[current]:
+                worst[evaluation.constraint_id] = evaluation.status
+        currency = state.request.budget.currency if state.request.budget else None
+        lines = []
+        for constraint in state.request.constraints:
+            status = worst.get(constraint.constraint_id)
+            if status is None:
+                continue
+            text = _EVAL_TEXT[status]
+            if constraint.field == "budget_total" and status == "unknown":
+                text = "не подтверждено: известна только часть стоимости"
+            lines.append(f"{_constraint_label(constraint, currency)} — {text}")
+        lines.extend(
+            f"«{group.raw_text}» — не проверялось (не распознано)"
+            for group in state.request.constraint_groups
+            if group.operator == "unparsed" and group.raw_text
+        )
+        return tuple(lines)
 
     def _history(self, *, revision: int, request_id: str, event: str, note: str | None = None):
         from odin.contracts.plan import HistoryEntry
