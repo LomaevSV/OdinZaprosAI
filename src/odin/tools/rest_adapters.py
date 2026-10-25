@@ -46,7 +46,15 @@ def normalize_geocoding(
             continue
         name = safe_text(raw.get("name"), 120)
         lat, lon, zone = raw.get("latitude"), raw.get("longitude"), raw.get("timezone")
-        if not name or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        if (
+            not name
+            or isinstance(lat, bool)
+            or isinstance(lon, bool)
+            or not isinstance(lat, (int, float))
+            or not isinstance(lon, (int, float))
+            or not math.isfinite(lat)
+            or not math.isfinite(lon)
+        ):
             continue
         if not (-90 <= lat <= 90 and -180 <= lon <= 180) or not isinstance(zone, str):
             continue
@@ -127,7 +135,12 @@ def normalize_transfers(
                     seconds = durations[row][column]
                 except (IndexError, TypeError):
                     continue
-                if not isinstance(seconds, (int, float)) or seconds < 0:
+                if (
+                    isinstance(seconds, bool)
+                    or not isinstance(seconds, (int, float))
+                    or not math.isfinite(seconds)
+                    or seconds < 0
+                ):
                     continue
                 meters = None
                 if distances is not None:
@@ -192,7 +205,12 @@ def normalize_transfers(
                         terms={
                             "informational": True,
                             "distance_km": round(meters / 1000, 1)
-                            if isinstance(meters, (int, float))
+                            if (
+                                isinstance(meters, (int, float))
+                                and not isinstance(meters, bool)
+                                and math.isfinite(meters)
+                                and meters >= 0
+                            )
                             else None,
                         },
                         source=source,

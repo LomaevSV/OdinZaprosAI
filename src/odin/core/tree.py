@@ -35,15 +35,19 @@ def evaluate_tree(
     notes: dict[str, str] = {}
     inactive: dict[str, str] = {}
     visiting: set[str] = set()
+    cycle_members: set[str] = set()
+    stack: list[str] = []
 
     def visit(group_id: str) -> EvaluationStatus:
         if group_id in statuses and group_id in notes:
             return statuses[group_id]
         if group_id in visiting:
+            cycle_members.update(stack[stack.index(group_id) :])
             notes[group_id] = "цикл в дереве условий: оценка невозможна"
             statuses[group_id] = "unknown"
             return "unknown"
         visiting.add(group_id)
+        stack.append(group_id)
         group = by_id[group_id]
         for child in group.children:
             if child in by_id:
@@ -58,6 +62,9 @@ def evaluate_tree(
                 else "основная ветвь отклонена: сработал FALLBACK"
             )
         visiting.discard(group_id)
+        stack.pop()
+        if group_id in cycle_members:
+            status, note = "unknown", "цикл в дереве условий: оценка невозможна"
         statuses[group_id] = status
         notes[group_id] = note
         return status

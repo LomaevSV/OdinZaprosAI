@@ -33,7 +33,7 @@ def to_money(value: Any) -> Decimal | None:
         amount = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-    if amount < 0 or amount > Decimal("100000000"):
+    if not amount.is_finite() or amount < 0 or amount > Decimal("100000000"):
         return None
     return amount.quantize(Decimal("0.01"))
 

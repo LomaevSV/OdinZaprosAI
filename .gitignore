@@ -34,6 +34,7 @@ odin_audit_*
 *.orig
 *.rej
 patch_package*/
+/audit_packages/
 # Журналы приёмки Docker (прикладываются к отчёту отдельно)
 docker_check/
 

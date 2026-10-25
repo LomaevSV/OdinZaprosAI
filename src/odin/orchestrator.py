@@ -1555,8 +1555,10 @@ class Orchestrator:
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
         with self.storage.session_lock(session_id):
             self._locked_head(cart.trip_id, trip_revision)
-            declined = decline_cart(cart, now=self._now())
             state = self.storage.get_state(cart.trip_id)
+            if cart.trip_revision != trip_revision or state.cart is None or state.cart.cart_id != cart_id:
+                raise ConflictError("корзина не относится к текущей ревизии поездки (REPLAN-02)")
+            declined = decline_cart(cart, now=self._now())
             new_revision = state.revision + 1
             new_state = state.evolve(
                 **{
@@ -1976,9 +1978,6 @@ class Orchestrator:
         for offer in [*state.transport_offers, *state.transfer_options]:
             if offer.offer_id == component.offer_id:
                 return offer.price
-        assert state.plan is not None
-        if state.plan.total_price is not None:
-            return state.plan.total_price
         raise CartError(f"цена компонента {component.component_id} неизвестна")
 
     def _plan_facts(self, state: TripState, *, notes: tuple[str, ...] = ()) -> ComposerFacts:

@@ -113,7 +113,8 @@ class BudgetValue(Spanned):
             amount = Decimal(text)
         except InvalidOperation as exc:
             raise ValueError("сумма бюджета не число") from exc
-        if amount <= 0 or amount > Decimal("100000000"):
+        # NaN/Infinity от модели — ошибка проверки, а не исключение Decimal в ходе диалога (INT-006).
+        if not amount.is_finite() or amount <= 0 or amount > Decimal("100000000"):
             raise ValueError("сумма бюджета вне диапазона")
         return format(amount.quantize(Decimal("0.01")), "f")
 
@@ -171,6 +172,314 @@ def span_in_text(span: str, text: str) -> bool:
     """Фрагмент должен буквально встречаться в сообщении (с точностью до регистра, «ё» и пробелов)."""
     needle = _norm(span).strip(" .,!?;:")
     return bool(needle) and needle in _norm(text)
+
+
+# ---------------------------------------------------------------- доказательства значений (INT-001…005)
+# Дословная цитата ещё не доказывает, что значение модели ей соответствует (аудит v1–v3). Ниже — узкие
+# проверки: число в цитате, город в цитате (с русскими падежами), явная обязательность и явная отмена условия.
+# Отклоняется только то, что цитате противоречит; если проверяемого признака в цитате нет (например, сумма
+# словами «сорок тысяч»), значение принимается, как раньше. Падежи, числительные, диапазоны бюджета и обычные
+# формулировки отмены защищены набором tests/unit/test_ru_forms_guard.py.
+
+_WORD_END = r"(?![а-яa-z0-9])"
+_WORD_START = r"(?<![а-яa-z0-9])"
+
+# Число: «50 000», «45 500», «1,5», «60000», «1.000.000».
+_NUMBER_TOKEN = re.compile(_WORD_START + r"(\d{1,3}(?:[ .]\d{3})+(?![\d])|\d+(?:[.,]\d+)?)")
+_MULTIPLIERS: tuple[tuple[re.Pattern[str], Decimal], ...] = (
+    (re.compile(r"^\s*(?:млн\.|миллион\w*|млн" + _WORD_END + ")"), Decimal(1_000_000)),
+    (re.compile(r"^\s*(?:тыс\w*\.|т\.\s?р\.?|(?:тыс\w*|тр)" + _WORD_END + ")"), Decimal(1000)),
+    (re.compile(r"^(?:к|k)" + _WORD_END), Decimal(1000)),  # «50к» — только слитно, «к» отдельно — предлог
+)
+# Число, за которым идёт не сумма, а состав, длительность, звёзды или возраст.
+_NOT_MONEY_TAIL = re.compile(
+    r"^\s*(?:человек\w*|чел\b|взросл\w*|дет\w*|ребен\w*|ноч\w*|сут\w*|дн\w*|день|недел\w*|звезд\w*|"
+    r"лет\b|год\w*|мес\w*|км\b|час\w*|мин\w*|%|процент\w*|раз\b)"
+)
+_LOWER_BOUND_HEAD = re.compile(r"(?:^|\s)от\s*$")
+
+
+def _number_values(raw: str, tail: str) -> list[Decimal]:
+    """Возможные значения числа с множителем («тыс.», «млн», «к»). «1.500» без множителя неоднозначно."""
+    compact = raw.replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", compact):
+        values = [Decimal(compact.replace(".", ""))]  # точка как разделитель тысяч
+        if compact.count(".") == 1:
+            values.append(Decimal(compact))  # «1.500 млн» — возможно, десятичная точка
+    else:
+        try:
+            values = [Decimal(compact.replace(",", "."))]
+        except InvalidOperation:
+            return []
+    for pattern, factor in _MULTIPLIERS:
+        if pattern.match(tail):
+            return [value * factor for value in values]
+    return values
+
+
+def _budget_evidence_matches(amount: Decimal, span: str) -> bool:
+    """Сумма модели должна совпасть с суммой цитаты (с множителем). Бюджет — верхняя граница: в диапазоне
+    «от 40 до 50 тысяч» / «40–50 тысяч» лимит — верхний конец; одна нижняя граница («от 40 тысяч») — не лимит."""
+    tokens = list(_NUMBER_TOKEN.finditer(span))
+    candidates: list[Decimal] = []
+    lower_only = False
+    for index, match in enumerate(tokens):
+        tail = span[match.end() :]
+        if _NOT_MONEY_TAIL.match(tail):
+            continue
+        head = span[: match.start()]
+        dash_range = index + 1 < len(tokens) and re.fullmatch(
+            r"\s*-\s*", span[match.end() : tokens[index + 1].start()]
+        )
+        if _LOWER_BOUND_HEAD.search(head) or dash_range:
+            lower_only = True  # нижняя граница диапазона — не лимит
+            continue
+        candidates.extend(_number_values(match.group(1), tail))
+    if not candidates:
+        return not lower_only
+    return any(amount == value for value in candidates)
+
+
+_COUNT_WORDS = {
+    "один": 1,
+    "одна": 1,
+    "одного": 1,
+    "одной": 1,
+    "два": 2,
+    "две": 2,
+    "двое": 2,
+    "двух": 2,
+    "двоих": 2,
+    "три": 3,
+    "трое": 3,
+    "трех": 3,
+    "троих": 3,
+    "четыре": 4,
+    "четверо": 4,
+    "четырех": 4,
+    "четверых": 4,
+    "пять": 5,
+    "пятеро": 5,
+    "пяти": 5,
+    "пятерых": 5,
+    "шесть": 6,
+    "шестеро": 6,
+    "шести": 6,
+    "шестерых": 6,
+    "семь": 7,
+    "семеро": 7,
+    "восемь": 8,
+    "девять": 9,
+}
+_COLLECTIVE = {"вдвоем": 2, "втроем": 3, "вчетвером": 4, "впятером": 5, "вшестером": 6, "всемером": 7}
+_COUNT_TOKEN = re.compile(
+    _WORD_START
+    + r"(\d+|"
+    + "|".join(sorted({*_COUNT_WORDS, *_COLLECTIVE}, key=len, reverse=True))
+    + r")"
+    + _WORD_END
+)
+_ADULT_TAIL = re.compile(r"^\s*(?:взросл\w*|человек\w*|чел\b|пассажир\w*|турист\w*)")
+_CHILD_TAIL = re.compile(
+    r"^\s*(?:лет\b|год\w*|мес\w*|дет\w*|ребен\w*|ребят\w*|сын\w*|доч\w*|малыш\w*|младен\w*)"
+)
+_CHILD_CONTEXT = re.compile(r"ребен|дет(?:и|ей|ьми|ям)|сын|доч|малыш|младен|\bлет\b")
+
+
+def _adults_evidence_matches(value: int, span: str) -> bool:
+    """Число взрослых: явное «2 взрослых», «двое», «вдвоём», «нас четверо»; возраст и число детей не в счёт."""
+    explicit: list[int] = []
+    generic: list[int] = []
+    for match in _COUNT_TOKEN.finditer(span):
+        token = match.group(1)
+        count = int(token) if token.isdigit() else _COLLECTIVE.get(token) or _COUNT_WORDS[token]
+        tail = span[match.end() :]
+        if (
+            token in _COLLECTIVE
+            or _ADULT_TAIL.match(tail)
+            or re.search(r"(?:^|\s)нас\s*$", span[: match.start()])
+        ):
+            explicit.append(count)
+        elif not _CHILD_TAIL.match(tail) and not _NOT_MONEY_TAIL.match(tail):
+            generic.append(count)
+    if explicit:
+        return value in explicit
+    if generic and not _CHILD_CONTEXT.search(span):
+        return value in generic
+    return True
+
+
+def _numeric_evidence_matches(field_name: str, item: Spanned) -> bool:
+    """INT-001/INT-004: число модели не должно противоречить числу в цитате."""
+    span = _norm(item.span).replace("\u00a0", " ").replace("\u202f", " ")
+    if field_name == "budget":
+        return _budget_evidence_matches(Decimal(str(item.amount)), span)  # type: ignore[attr-defined]
+    if field_name == "adults":
+        return _adults_evidence_matches(int(item.value), span)  # type: ignore[attr-defined]
+    return True
+
+
+# Формы, которые не выводятся из основы слова (сокращения, разговорные и латиница).
+_CITY_ALIASES = {
+    "москва": {"moscow", "мск"},
+    "казань": {"kazan"},
+    "сочи": {"sochi"},
+    "санкт-петербург": {
+        "петербург",
+        "петербурга",
+        "петербурге",
+        "петербургу",
+        "спб",
+        "питер",
+        "питера",
+        "питере",
+        "питеру",
+        "saint petersburg",
+        "st petersburg",
+        "ленинград",
+    },
+    "нижний новгород": {"нижний", "нижнего", "нижнем", "nizhny novgorod"},
+    "калининград": {"kaliningrad"},
+    "екатеринбург": {"екб", "екат", "yekaterinburg"},
+    "новосибирск": {"новосиб", "novosibirsk"},
+    "ростов-на-дону": {"ростов", "ростова", "ростове"},
+}
+_VOWELS = "аеиоуыэюя"
+_ADJECTIVE_ENDINGS = ("ий", "ый", "ой", "ая", "ое", "ые", "ие", "яя")
+
+
+def _city_word_pattern(word: str) -> str:
+    """Слово названия с падежным окончанием до 3 букв: Казань→Казани, Орёл→Орла, Набережные→Набережных."""
+    if len(word) <= 2:
+        return re.escape(word)
+    stems = {word}
+    if len(word) >= 5 and word[-2:] in _ADJECTIVE_ENDINGS:
+        stems.add(word[:-2])
+    if word[-1] in _VOWELS + "йь":
+        stems.add(word[:-1])
+    elif len(word) >= 4 and word[-2] in "ое" and word[-3] not in _VOWELS:
+        stems.add(word[:-2] + word[-1])  # беглая гласная
+    return (
+        "(?:"
+        + "|".join(sorted((re.escape(stem) for stem in stems), key=len, reverse=True))
+        + r")[а-яa-z]{0,3}"
+    )
+
+
+def _city_pattern(name: str) -> str:
+    parts = re.split(r"([-\s]+)", name)
+    pieces = [r"[-\s]*" if index % 2 else _city_word_pattern(part) for index, part in enumerate(parts)]
+    return _WORD_START + "".join(pieces) + _WORD_END
+
+
+def _city_evidence_matches(item: TextValue) -> bool:
+    """INT-002: город модели должен быть назван в цитате — в любом падеже или известным сокращением.
+    «Из Москвы» → «Сочи» отклоняется; «из Орла» → «Орёл», «в Ростове-на-Дону» → «Ростов-на-Дону» принимаются."""
+    city = _norm(item.value)
+    span = _norm(item.span)
+    names = {city}
+    for canonical, aliases in _CITY_ALIASES.items():
+        if city == canonical or city in aliases:
+            names |= {canonical, *aliases}
+    return any(re.search(_city_pattern(name), span) for name in names)
+
+
+# INT-003: обязательность, явно выраженная в цитате, определяется кодом (промпт, правило 6).
+_REQUIREDNESS_FIELDS = frozenset(
+    {"budget", "transport", "pets", "breakfast", "stars_min", "free_cancellation"}
+)
+_MANDATORY_RE = re.compile(
+    _WORD_START + r"(?<!не )(?:обязател\w*|строго|только|исключительно|не\s+дороже|не\s+больше|не\s+выше|"
+    r"не\s+более)" + _WORD_END
+)
+_PREFERRED_RE = re.compile(
+    _WORD_START + r"(?:желательно|предпочтительно|хотелось\s+бы|по\s+возможности|если\s+получится|"
+    r"если\s+можно|не\s+обязател\w*|необязател\w*|можно\s+без)" + _WORD_END
+)
+
+
+def _required_from_span(name: str, item: Spanned) -> bool | None:
+    """True/False — признак обязательности в цитате; None — признаков нет или они противоречат друг другу."""
+    if name not in _REQUIREDNESS_FIELDS:
+        return None
+    span = _norm(item.span)
+    mandatory = bool(_MANDATORY_RE.search(span))
+    preferred = bool(_PREFERRED_RE.search(span))
+    if mandatory == preferred:
+        return None
+    return mandatory
+
+
+# INT-005: подлинная цитата не доказывает отмену условия. Нужны тема поля и признак отмены в одной части
+# фразы (не дальше 3 слов, без чисел между ними); часть с признаком обязательности отменой не считается.
+_REVOKE_COMMON = (
+    r"не\s+(?:так\s+|очень\s+|особо\s+)?(?:важ\w*|принципиальн\w*|критичн\w*|имеет\s+значени\w*)|неважн\w*|"
+    r"все\s+равно|без\s+разницы|не\s+учитыва\w*|убер\w*|убра\w*|отмен(?:и|ите|яем|им)|забуд\w*|сними\w*|"
+    r"снимаем|снять"
+)
+_CLEAR_TOPIC: dict[str, str] = {
+    "budget": r"бюджет\w*|деньг\w*|денег|цен[аеуы]|ценой|стоимост\w*|сумм[аеуы]",
+    "transport": r"транспорт\w*|самолет\w*|поезд\w*|авиа\w*|перелет\w*|ж/?д|электричк\w*|на\s+чем",
+    "pets": r"собак\w*|пес|пса|псом|кошк\w*|кот|кота|котом|животн\w*|питом\w*",
+    "breakfast": r"завтрак\w*",
+    "stars_min": r"звезд\w*|звездност\w*|категори\w*|класс\w*\s+(?:отел\w*|гостиниц\w*)",
+    "free_cancellation": r"отмен(?:а|ы|у|ой|е)|возврат\w*",
+    "wishes_tags": r"пожелани\w*|экскурси\w*|достопримечательност\w*|развлечени\w*|программ\w*",
+    "children_ages": r"дет(?:и|ей|ьми|ям|ях)|ребен\w*|ребят\w*|сын\w*|доч\w*|малыш\w*",
+    "return_trip": r"обратн\w*|назад|возвращ\w*|вернем\w*|вернуться",
+}
+_CLEAR_REVOKE: dict[str, str] = {
+    "budget": _REVOKE_COMMON
+    + r"|любой|любая|любые|любую|не\s+ограничен\w*|без\s+ограничени\w*|без\s+лимит\w*",
+    "transport": _REVOKE_COMMON
+    + r"|можно\s+(?:и|тоже|также)|тоже\s+(?:можно|подойд\w*|подход\w*|ок|норм\w*)|"
+    r"также\s+(?:можно|подойд\w*)|не\s+обязательно|необязательно|люб\w*\s+(?:вид\w*\s+)?транспорт\w*",
+    "pets": _REVOKE_COMMON
+    + r"|без|не\s+(?:едет|едут|поедет|поедут|берем|возьмем)|оста(?:ется|ются|нется|нутся|вляем|вим)",
+    "breakfast": _REVOKE_COMMON
+    + r"|без|не\s+(?:нужен|нужны|нужно|надо|обязател\w*)|необязател\w*|можно\s+без",
+    "stars_min": _REVOKE_COMMON
+    + r"|любой|любая|любые|любую|любого|не\s+(?:нуж(?:ен|на|но|ны)|обязател\w*)|необязател\w*",
+    "free_cancellation": _REVOKE_COMMON
+    + r"|без|не\s+(?:нуж(?:ен|на|но|ны)|надо|обязател\w*)|необязател\w*|можно\s+без",
+    "wishes_tags": _REVOKE_COMMON + r"|без|не\s+(?:нуж(?:ен|на|но|ны)|надо)",
+    "children_ages": _REVOKE_COMMON + r"|без|не\s+(?:едет|едут|поедет|поедут|летит|летят|будет|будут)|"
+    r"оста(?:ется|ются|нется|нутся|вляем|вим)",
+    "return_trip": _REVOKE_COMMON
+    + r"|без|не\s+(?:нуж(?:ен|на|но|ны)|надо|нужно|обязател\w*|планиру\w*|будет|будем|"
+    r"собираемся)|необязател\w*",
+}
+# Устойчивые обороты отмены, где тема и признак не разделяются (проверяются по всей цитате).
+_CLEAR_IDIOMS: dict[str, str] = {
+    "budget": r"без\s+бюджет\w*|(?:не\s*важно|все\s+равно|без\s+разницы),?\s+сколько\s+(?:стоит|будет\s+стоить)",
+    "transport": r"(?:не\s*важно|все\s+равно|без\s+разницы),?\s+(?:на\s+чем|чем)\s+(?:ехать|добираться|лететь)",
+    "children_ages": r"только\s+взросл\w*|одни\s+взросл\w*",
+    "return_trip": r"в\s+одну\s+сторону|в\s+один\s+конец",
+}
+_CLAUSE_SPLIT = re.compile(r"[,.;:!?()]|\s(?:но|а|однако|зато|хотя)\s")
+
+
+def _clear_evidence_matches(field_name: str, span: str) -> bool:
+    text = _norm(span)
+    idiom = _CLEAR_IDIOMS.get(field_name)
+    if idiom and re.search(_WORD_START + "(?:" + idiom + ")" + _WORD_END, text):
+        return True
+    topic_re = re.compile(_WORD_START + "(?:" + _CLEAR_TOPIC[field_name] + ")" + _WORD_END)
+    revoke_re = re.compile(_WORD_START + "(?:" + _CLEAR_REVOKE[field_name] + ")" + _WORD_END)
+    for clause in _CLAUSE_SPLIT.split(text):
+        if _MANDATORY_RE.search(clause):
+            continue
+        for topic in topic_re.finditer(clause):
+            for revoke in revoke_re.finditer(clause):
+                if topic.start() < revoke.end() and revoke.start() < topic.end():
+                    return True  # «любой транспорт»: признак включает тему
+                if topic.end() <= revoke.start():
+                    gap = clause[topic.end() : revoke.start()]
+                else:
+                    gap = clause[revoke.end() : topic.start()]
+                if len(gap.split()) <= 3 and not re.search(r"\d", gap):
+                    return True
+    return False
 
 
 @dataclass(slots=True)
@@ -272,19 +581,36 @@ def apply_delta(
     def check(name: str, item: Spanned | None) -> bool:
         if item is None:
             return False
-        if span_in_text(item.span, text):
+        if not span_in_text(item.span, text):
+            reason = "фрагмент не найден в сообщении"
+        elif not _numeric_evidence_matches(name, item):
+            reason = "число не совпадает с названным в сообщении"  # INT-001/INT-004
+        elif name in ("origin", "destination") and not _city_evidence_matches(item):  # type: ignore[arg-type]
+            reason = "город не назван в цитате"  # INT-002
+        else:
             report.accepted.append(name)
             return True
         report.rejected.append(name)
-        report.notes.append(
-            f"Значение «{FIELD_TITLES.get(name, name)}» не принято: фрагмент не найден в сообщении"
-        )
+        report.notes.append(f"Значение «{FIELD_TITLES.get(name, name)}» не принято: {reason}")
         return False
 
-    # Отмена условий («бюджет не важен», «можно и самолётом»): только с дословным фрагментом.
+    def required(name: str, item: Spanned, model_value: bool) -> bool:
+        """INT-003: явная обязательность или пожелание в цитате важнее мнения модели."""
+        from_span = _required_from_span(name, item)
+        if from_span is None or from_span == model_value:
+            return model_value
+        report.notes.append(
+            f"Обязательность условия «{FIELD_TITLES.get(name, name)}» определена по формулировке «{item.span}»"
+        )
+        return from_span
+
+    # Отмена условий («бюджет не важен», «можно и самолётом»): дословный фрагмент с явной отменой (INT-005).
     for item in delta.clear:
-        if not span_in_text(item.span, text):
+        if not span_in_text(item.span, text) or not _clear_evidence_matches(item.field, item.span):
             report.rejected.append(f"clear:{item.field}")
+            report.notes.append(
+                f"Условие «{FIELD_TITLES.get(item.field, item.field)}» сохранено: явной отмены в сообщении нет"
+            )
             continue
         report.accepted.append(f"clear:{item.field}")
         if item.field == "budget":
@@ -343,29 +669,39 @@ def apply_delta(
         modes = _transport_modes(delta.transport)
         if modes:
             values["transport_modes"] = modes
-            values["transport_modes_required"] = bool(delta.transport.required or delta.transport.exclude)
+            values["transport_modes_required"] = bool(
+                required("transport", delta.transport, delta.transport.required) or delta.transport.exclude
+            )
     if check("budget", delta.budget):
         assert delta.budget is not None
         values.update(
             budget_amount=delta.budget.amount,
             budget_currency=delta.budget.currency,
-            budget_required=delta.budget.required,
+            budget_required=required("budget", delta.budget, delta.budget.required),
         )
     if check("pets", delta.pets):
         assert delta.pets is not None
         values["pets"] = [pet.model_dump() for pet in delta.pets.value]
-        values["pets_required"] = delta.pets.required
+        values["pets_required"] = required("pets", delta.pets, delta.pets.required)
     if check("breakfast", delta.breakfast):
         assert delta.breakfast is not None
-        values.update(breakfast=delta.breakfast.value, breakfast_required=delta.breakfast.required)
+        values.update(
+            breakfast=delta.breakfast.value,
+            breakfast_required=required("breakfast", delta.breakfast, delta.breakfast.required),
+        )
     if check("stars_min", delta.stars_min):
         assert delta.stars_min is not None
-        values.update(stars_min=delta.stars_min.value, stars_required=delta.stars_min.required)
+        values.update(
+            stars_min=delta.stars_min.value,
+            stars_required=required("stars_min", delta.stars_min, delta.stars_min.required),
+        )
     if check("free_cancellation", delta.free_cancellation):
         assert delta.free_cancellation is not None
         values.update(
             free_cancellation=delta.free_cancellation.value,
-            free_cancellation_required=delta.free_cancellation.required,
+            free_cancellation_required=required(
+                "free_cancellation", delta.free_cancellation, delta.free_cancellation.required
+            ),
         )
     if check("wishes_tags", delta.wishes_tags):
         assert delta.wishes_tags is not None

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -58,6 +58,15 @@ def _money_before(value: Any) -> Any:
         raise ValueError("денежное значение не может быть логическим")
     if isinstance(value, float):
         raise ValueError("денежное значение нельзя передавать как float; используйте строку (PRICE-01)")
+    if isinstance(value, (str, int, Decimal)):
+        # MONEY-001: явная граница 12 целых разрядов (max_digits=14, decimal_places=2) — не зависит от того,
+        # как версия pydantic считает разряды у «1000000000000.00» / «1E+12».
+        try:
+            number = Decimal(str(value))
+            if number.is_finite() and abs(number) >= Decimal("1000000000000"):
+                raise ValueError("денежное значение превышает 12 целых разрядов")
+        except InvalidOperation:
+            pass  # некорректную строку отклонит схема Decimal
     return value
 
 

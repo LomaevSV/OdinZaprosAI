@@ -85,7 +85,7 @@ def evaluate_budget(
     """План §2.23: известная нижняя граница больше бюджета → ``violated``; при неполной цене — ``unknown``."""
     if known_amount is None:
         return "unknown", None, "известная часть стоимости неизвестна"
-    if known_currency is not None and known_currency != budget_currency:
+    if known_currency != budget_currency:
         return (
             "unknown",
             None,
