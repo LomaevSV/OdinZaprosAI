@@ -11,6 +11,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from datetime import date, timedelta
 from typing import Any
 
@@ -59,7 +60,7 @@ def run(base: str = DEFAULT_BASE) -> dict[str, Any]:
     body = {
         "request_id": "req-selfcheck-0003",
         "trip_revision": cart["trip_revision"],
-        "confirmation_id": "conf-selfcheck-0001",
+        "confirmation_id": f"conf-selfcheck-{uuid.uuid4().hex}",
         "purchase_consent": True,
         "risk_acknowledgement": True,
     }
