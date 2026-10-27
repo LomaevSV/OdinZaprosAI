@@ -91,6 +91,33 @@ def sum_prices(prices: Sequence[Price], component_ids: Sequence[str] | None = No
     return PriceTotals(amount=total, currency=currency, completeness="complete", unknown_reason=None)
 
 
+def sum_prices_or_unresolved(
+    prices: Sequence[Price], component_ids: Sequence[str] | None = None
+) -> PriceTotals:
+    """Как ``sum_prices``, но разные валюты дают неизвестный итог, а не исключение (MIXED-CURRENCY-PLAN-01).
+
+    DEC-17: без проверенного курса суммы в разных валютах не складываются — итог ``unknown`` с причиной
+    ``currency_unresolved``, без суммы и без валюты. Цены компонентов не меняются. ``partial_components``
+    сохраняет смысл ``sum_prices``: компоненты без известной полной цены (MIXED-PARTIAL-COMPONENTS-03).
+    """
+    try:
+        return sum_prices(prices, component_ids)
+    except CurrencyMixError:
+        ids = list(component_ids) if component_ids is not None else [str(i) for i in range(len(prices))]
+        incomplete = tuple(
+            component_id
+            for price, component_id in zip(prices, ids, strict=True)
+            if price.amount is None or price.total_completeness != "complete"
+        )
+        return PriceTotals(
+            amount=None,
+            currency=None,
+            completeness="unknown",
+            unknown_reason="currency_unresolved",
+            partial_components=incomplete,
+        )
+
+
 def price_comparability(prices: Iterable[Price]) -> str:
     """Сопоставимость цен (план §2.23): подписанное поле, не заменяет ``completeness``."""
     items = list(prices)

@@ -40,7 +40,7 @@ from odin.core.constraints import (
     rank_key,
     sort_by_rank,
 )
-from odin.core.money import sum_prices, total_price
+from odin.core.money import sum_prices_or_unresolved, total_price
 from odin.core.replan import changed_groups, invalidated_roles, split_change_set
 from odin.core.tree import coverage, tradeoffs
 from odin.core.trip import (
@@ -839,11 +839,12 @@ class Orchestrator:
         source = mock_source(
             "estimate_destination_cost", candidate.candidate_id, as_of, source_type="computed"
         )
-        totals = sum_prices([price for _, price in known], [role for role, _ in known])
-        # Трансфер не оценивается (DEC-18): итог не может быть полным.
+        totals = sum_prices_or_unresolved([price for _, price in known], [role for role, _ in known])
+        currency_unresolved = totals.unknown_reason == "currency_unresolved"
+        # Трансфер не оценивается (DEC-18): итог не может быть полным. Разные валюты (DEC-17): итог неизвестен.
         totals = replace(
             totals,
-            completeness="partial",
+            completeness="unknown" if currency_unresolved else "partial",
             unknown_reason=totals.unknown_reason or "price_incomplete",
             partial_components=(*totals.partial_components, *missing, "transfer"),
         )
@@ -851,6 +852,8 @@ class Orchestrator:
         duration = outbound.duration_minutes if outbound else None
         prefix = "ДЕМО-оценка" if any(price.source.data_mode == "mock" for _, price in known) else "Оценка"
         note = f"{prefix} за группу и период: дорога и отель; трансфер не оценён (DEC-18)"
+        if currency_unresolved:
+            note += "; цены в разных валютах: общая сумма не вычислена без проверенного курса (DEC-17)"
         if missing:
             note += "; не найдено: " + ", ".join(missing)
         if duration is not None:
@@ -1278,7 +1281,8 @@ class Orchestrator:
                 "build_plan", f"plan-{state.trip_id}-{state.revision}", as_of, source_type="computed"
             )
         plan_id = f"{'P' if plan_mode in ('live', 'replay') else 'DEMO-P'}-{state.trip_id}-{state.revision}"
-        totals = sum_prices(prices, component_ids)
+        # MIXED-CURRENCY-PLAN-01, DEC-17: разные валюты без проверенного курса — итог неизвестен, не HTTP 500.
+        totals = sum_prices_or_unresolved(prices, component_ids)
         # PRICE-01, SCOPE-01: без найденного обязательного компонента итог не может быть полным.
         missing_roles = [role for role in ("hotel", "outbound") if role not in selected]
         if request.return_trip and "return" not in selected:
@@ -1298,6 +1302,8 @@ class Orchestrator:
             evaluations.append(budget_evaluation)
 
         unknowns: list[str] = list(transfer_unknowns)
+        if totals.unknown_reason == "currency_unresolved":
+            unknowns.append("стоимости в разных валютах: общий итог не вычислен без проверенного курса")
         if "hotel" in selected and state.transfer_options:
             unknowns.append("стоимость трансфера не подтверждена")
         for role, (offer, _, _) in selected.items():
@@ -1908,12 +1914,19 @@ class Orchestrator:
             total.currency,
             total.total_completeness,
         )
+        currency_unresolved = total.unknown_reason == "currency_unresolved"
+        if currency_unresolved and status == "unknown":
+            reason = "стоимости в разных валютах: итог не вычислен без проверенного курса (DEC-17)"
         return ConstraintEvaluation(
             constraint_id=constraint.constraint_id,
             component_id=None,
             plan_id=f"DEMO-P-{state.trip_id}-{state.revision}",
             status=status,
-            unknown_reason="price_incomplete" if status == "unknown" else None,
+            unknown_reason=(
+                ("currency_unresolved" if currency_unresolved else "price_incomplete")
+                if status == "unknown"
+                else None
+            ),
             evidence_refs=["computed:plan_total"],
             reason=reason,
             deviation=deviation,
