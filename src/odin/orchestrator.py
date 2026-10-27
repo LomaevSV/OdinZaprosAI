@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -333,6 +334,10 @@ class Orchestrator:
         self._places: dict[str, ResolvedPlace] = {}
         # Уведомления хода о сбоях Live и замене на ДЕМО: попадают в ответ (нет незаметной подмены).
         self._turn_notices: list[str] = []
+        # LLM-CONCURRENCY-01: бюджеты LLM и инструментов, журнал вызовов и уведомления — состояние одного хода
+        # в общем экземпляре. session_lock разделяет только ходы одной сессии, поэтому ходы разных сессий
+        # выполняются по очереди: иначе начало чужого хода сбрасывало бы бюджет посреди текущего.
+        self._turn_lock = threading.RLock()
 
     def _now(self) -> datetime:
         return self.clock()
@@ -440,7 +445,7 @@ class Orchestrator:
     ) -> TurnResult:
         session = self.storage.get_session(session_id)
         trip_id = session["trip_id"]
-        with self.storage.session_lock(session_id):
+        with self.storage.session_lock(session_id), self._turn_lock:
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
             self._start_turn(session_id, request_id, trip_id)
@@ -1637,7 +1642,7 @@ class Orchestrator:
     ) -> TurnResult:
         """Явная пересборка по ``change_set`` (таблица REPLAN-01). Старая корзина теряет право подтверждения."""
         session_id = self.storage.get_head(trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with self.storage.session_lock(session_id), self._turn_lock:
             self._locked_head(trip_id, trip_revision)
             state = self.storage.get_state(trip_id)
             if state.request is None:
