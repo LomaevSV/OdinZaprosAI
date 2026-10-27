@@ -28,6 +28,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .card .meta { font-size: 12px; color: var(--muted); }
 .card.selected { border-color: #3366cc; box-shadow: 0 0 0 1px #3366cc inset; }
+.card.selectable { cursor: pointer; }
+.card.selectable:hover { border-color: #7a99d6; }
+.card.selectable:focus-visible { outline: 2px solid #3366cc; outline-offset: 2px; }
+.card.selected::before { content: "✓ выбрано"; float: right; font-size: 12px; color: #3366cc; font-weight: 600; }
+button.inactive { opacity: 0.6; }
+.meta { font-size: 12px; color: var(--muted); }
 .status-matched { color: var(--ok); }
 .status-violated { color: var(--bad); }
 .status-unknown, .status-not_applicable { color: var(--unk); }

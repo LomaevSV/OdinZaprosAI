@@ -67,7 +67,8 @@
       <h3>Условия</h3>
       <ul id="constraints" class="constraints" data-testid="constraints"></ul>
       <div class="actions">
-        <button id="cart-btn" type="button" disabled data-testid="cart-button">Сформировать корзину</button>
+        <button id="cart-btn" type="button" aria-disabled="true" class="inactive" data-testid="cart-button">Сформировать корзину</button>
+        <p id="cart-hint" class="meta" data-testid="cart-hint" aria-live="polite"></p>
       </div>
       <section id="cart" class="cart" data-testid="cart" hidden></section>
       <section id="receipt" class="receipt" data-testid="receipt" hidden></section>

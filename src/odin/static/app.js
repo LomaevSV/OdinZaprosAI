@@ -2,7 +2,7 @@
 "use strict";
 
 const API = "/api/v1";
-const state = { session: null, trip: null, cart: null, revision: null };
+const state = { session: null, trip: null, cart: null, revision: null, busy: false };
 
 const $ = (id) => document.getElementById(id);
 const text = (value) => document.createTextNode(value == null ? "" : String(value));
@@ -136,14 +136,14 @@ function renderTrip(trip) {
   const chosen = new Set((plan ? plan.components : []).map((component) => component.offer_id));
   for (const offer of trip.transport_offers || []) {
     const node = card(offer.title, `${offer.direction === "outbound" ? "Туда" : "Обратно"}: ${new Date(offer.departure_at).toLocaleString("ru-RU")} → ${new Date(offer.arrival_at).toLocaleString("ru-RU")}`, offer.price, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
-    if (chosen.has(offer.offer_id)) node.classList.add("selected");
+    makeSelectable(node, offer.direction, offer.offer_id, offer.title, chosen.has(offer.offer_id));
     cards.append(node);
   }
   for (const offer of trip.hotel_offers || []) {
     const hotel = hotels[offer.hotel_id] || {};
     const stars = hotel.star_rating == null ? "категория не указана" : `${hotel.star_rating}★`;
     const node = card(hotel.name || offer.hotel_id, `${stars}; завтрак: ${offer.terms.breakfast_included == null ? "не подтверждён" : offer.terms.breakfast_included ? "да" : "нет"}`, offer.price_total, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
-    if (chosen.has(offer.offer_id)) node.classList.add("selected");
+    makeSelectable(node, "hotel", offer.offer_id, hotel.name || offer.hotel_id, chosen.has(offer.offer_id));
     cards.append(node);
   }
   for (const offer of trip.transfer_options || []) {
@@ -167,7 +167,88 @@ function renderTrip(trip) {
     const role = ROLE_LABELS[roleByOffer[evaluation.component_id] || evaluation.component_id];
     constraints.append(el("li", { class: `status-${evaluation.status}` }, `${label}${role ? ", " + role : ""}: ${STATUS[evaluation.status]} — ${evaluation.reason}`));
   }
-  $("cart-btn").disabled = !(plan && plan.components.length) || trip.status === "purchased_demo";
+  updateCartButton(trip);
+}
+
+// CART-UI-001: кнопка не «молчит». Если корзину собрать нельзя, нажатие объясняет причину.
+function cartBlocker(trip) {
+  if (!trip || !trip.plan || !trip.plan.components.length) {
+    return "план поездки ещё не собран: задайте запрос или ответьте на уточняющие вопросы";
+  }
+  if (trip.status === "purchased_demo") return "демо-покупка по этой поездке уже оформлена";
+  return null;
+}
+
+function updateCartButton(trip) {
+  const button = $("cart-btn");
+  const blocker = cartBlocker(trip);
+  button.setAttribute("aria-disabled", blocker ? "true" : "false");
+  button.title = blocker || "";
+  button.classList.toggle("inactive", Boolean(blocker));
+  $("cart-hint").textContent = blocker ? `Корзина недоступна: ${blocker}.` : "";
+}
+
+// UI-001: выбор альтернативы. Выбираемые роли — транспорт туда/обратно и гостиница.
+const SELECTABLE_ROLES = new Set(["outbound", "return", "hotel"]);
+
+function makeSelectable(node, role, offerId, title, selected) {
+  if (selected) node.classList.add("selected");
+  if (!SELECTABLE_ROLES.has(role)) return;
+  node.classList.add("selectable");
+  node.setAttribute("data-offer-id", offerId);
+  node.setAttribute("data-role", role);
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.setAttribute("aria-pressed", selected ? "true" : "false");
+  node.title = selected ? "Выбрано" : "Нажмите, чтобы выбрать этот вариант";
+  node.addEventListener("click", () => selectOffer(role, offerId, title));
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectOffer(role, offerId, title);
+    }
+  });
+}
+
+function currentSelections(trip) {
+  // Сервер заменяет набор выбранных компонентов целиком: передаём текущий выбор по всем ролям,
+  // чтобы выбор гостиницы не менял незаметно транспорт, и наоборот.
+  const selections = {};
+  for (const component of (trip && trip.plan ? trip.plan.components : [])) {
+    if (SELECTABLE_ROLES.has(component.role)) selections[component.role] = component.offer_id;
+  }
+  return selections;
+}
+
+async function selectOffer(role, offerId, title) {
+  if (!state.trip || state.busy) return;
+  if (currentSelections(state.trip)[role] === offerId) {
+    say("assistant", `Этот вариант (${ROLE_LABELS[role] || role}) уже выбран.`);
+    return;
+  }
+  state.busy = true;
+  try {
+    const selections = { ...currentSelections(state.trip), [role]: offerId };
+    const trip = await call("POST", `${API}/trips/${state.trip.trip_id}/selections`, {
+      request_id: requestId(),
+      trip_revision: state.revision,
+      selections,
+    });
+    resetCart();
+    renderTrip(trip);
+    const total = trip.plan ? `${money(trip.plan.total_price)} — стоимость ${COMPLETENESS[trip.plan.completeness]}` : "не рассчитан";
+    say("assistant", `Выбрано (${ROLE_LABELS[role] || role}): ${title}. Итог пересчитан: ${total}. Прежняя корзина недействительна.`);
+  } catch (error) {
+    say("assistant", `Не удалось выбрать вариант: ${error.message}`);
+  } finally {
+    state.busy = false;
+  }
+}
+
+function resetCart() {
+  state.cart = null;
+  $("cart").hidden = true;
+  $("cart").replaceChildren();
 }
 
 function renderQuestions(questions) {
@@ -304,12 +385,35 @@ $("text-form").addEventListener("submit", (event) => {
 });
 
 $("cart-btn").addEventListener("click", async () => {
+  const blocker = cartBlocker(state.trip);
+  if (blocker) {
+    say("assistant", `Корзину пока нельзя сформировать: ${blocker}.`);
+    return;
+  }
+  if (state.busy) return;
+  state.busy = true;
+  const button = $("cart-btn");
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Формирую корзину…";
   try {
     const response = await call("POST", `${API}/trips/${state.trip.trip_id}/cart`, { request_id: requestId(), trip_revision: state.revision });
     state.revision = response.trip_revision;
     renderCart(response.cart);
+    try {
+      renderTrip(await call("GET", `${API}/trips/${state.trip.trip_id}`));
+    } catch (error) {
+      // Корзина уже создана; устаревшая панель поездки не мешает подтверждению по ревизии корзины.
+    }
+    const items = response.cart.items.length;
+    say("assistant", `Корзина сформирована: позиций — ${items}, итог ${money(response.cart.total_price)} (${COMPLETENESS[response.cart.completeness]}). Проверьте её ниже и перейдите к подтверждению.`);
+    if ($("cart").scrollIntoView) $("cart").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     say("assistant", `Ошибка корзины: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+    state.busy = false;
   }
 });
 

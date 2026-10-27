@@ -9,8 +9,8 @@ LLM (в S2+) только извлекает фразу; разрешает её
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from odin.contracts.trip import DateExpression
@@ -280,14 +280,32 @@ def _resolve(text: str, today: date) -> Resolution:
     return Resolution("unresolved", None, None, "выражение даты не распознано: требуется уточнение")
 
 
+def _resolve_without_timezone(raw_text: str, reference_datetime: datetime) -> Resolution:
+    """DATE-001: при неизвестном поясе местная опорная дата лежит в пределах ±1 дня от даты UTC
+    (пояса UTC−12…UTC+14). Если толкование одинаково для всех трёх дат («с 1 по 8 марта»), оно от пояса
+    не зависит и принимается; относительные фразы («завтра», «в пятницу») остаются `unresolved`."""
+    utc_today = reference_datetime.astimezone(UTC).date()
+    options = [_resolve(raw_text, utc_today + timedelta(days=shift)) for shift in (-1, 0, 1)]
+    first = options[0]
+    same = all(
+        (item.status, item.start, item.end, item.candidates)
+        == (first.status, first.start, first.end, first.candidates)
+        for item in options
+    )
+    if same and first.status in ("resolved", "ambiguous"):
+        return replace(first, rule=f"{first.rule}; не зависит от часового пояса (DEC-34)")
+    return Resolution(
+        "unresolved", None, None, "часовой пояс не задан: местная опорная дата неизвестна (DEC-34)"
+    )
+
+
 def resolve_date_expression(
     raw_text: str, reference_datetime: datetime, timezone_name: str | None
 ) -> tuple[DateExpression, Resolution]:
-    """Разрешает фразу. Без часового пояса — `unresolved`: местная дата зависит от пояса (DEC-34)."""
+    """Разрешает фразу. Без часового пояса пояс не подставляется (DEC-34): фраза принимается, только если
+    её толкование одинаково для любой возможной местной даты, иначе — `unresolved`."""
     if timezone_name is None:
-        resolution = Resolution(
-            "unresolved", None, None, "часовой пояс не задан: местная опорная дата неизвестна (DEC-34)"
-        )
+        resolution = _resolve_without_timezone(raw_text, reference_datetime)
     else:
         resolution = _resolve(raw_text, _local_today(reference_datetime, timezone_name))
     expression = DateExpression(
