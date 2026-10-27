@@ -7,10 +7,14 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 from typing import Any
 
 from odin.config import Limits, Settings
@@ -445,35 +449,106 @@ class Orchestrator:
     ) -> TurnResult:
         session = self.storage.get_session(session_id)
         trip_id = session["trip_id"]
-        with self.storage.session_lock(session_id), self._turn_lock:
+        with (
+            self.storage.session_lock(session_id),
+            self._turn_lock,
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
             self._start_turn(session_id, request_id, trip_id)
-            outcome = self._interpret(
-                session_id=session_id, request_id=request_id, text=text, form=form, previous=current
-            )
-            # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
-            has_plan = current.plan is not None and bool(current.plan.components)
-            input_mode = INPUT_MODES.get(outcome.mode, "structured_form")
-            if has_plan and current.request is not None and not outcome.free_text_refused:
-                assert current.request is not None
-                if outcome.questions or (
-                    outcome.request is not None
-                    and detect_changes(request_to_form(current.request), request_to_form(outcome.request))
-                ):
-                    result = self._apply_replan(current, outcome, request_id=request_id)
-                    result.input_mode = input_mode
-                    return result
-            result = self._run_turn(current, outcome, request_id)
-            result.input_mode = input_mode
-            return result
+            started = time.perf_counter()
+            try:
+                return self._handle_message_body(
+                    current,
+                    session_id=session_id,
+                    request_id=request_id,
+                    trip_id=trip_id,
+                    text=text,
+                    form=form,
+                )
+            except Exception as exc:
+                self._turn_failed(session_id, request_id, trip_id, exc, started)
+                raise
+            finally:
+                self._end_turn()
+
+    def _turn_failed(
+        self,
+        session_id: str,
+        request_id: str,
+        trip_id: str,
+        exc: Exception,
+        started: float,
+    ) -> None:
+        """Диагностика неудачного хода. Ошибки журналирования не подменяют исходное исключение."""
+        payload = {
+            "request_id": request_id,
+            "error_code": type(exc).__name__,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+        for record in (
+            lambda: self._audit_llm(None, request_id),
+            lambda: self.storage.add_event(session_id, "turn_failed", payload),
+            lambda: self.storage.audit(
+                "turn_failed", request_id=request_id, trip_id=trip_id, session_id=session_id, payload=payload
+            ),
+        ):
+            try:
+                record()
+            except Exception as failure:  # OBS-SPAN-FAIL-01: телеметрия не маскирует бизнес-ошибку
+                logger.warning("turn_failed not recorded: %s", type(failure).__name__)
+
+    def _handle_message_body(
+        self,
+        current: TripState,
+        *,
+        session_id: str,
+        request_id: str,
+        trip_id: str,
+        text: str | None,
+        form: StructuredForm | None,
+    ) -> TurnResult:
+        outcome = self._interpret(
+            session_id=session_id, request_id=request_id, text=text, form=form, previous=current
+        )
+        # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
+        has_plan = current.plan is not None and bool(current.plan.components)
+        input_mode = INPUT_MODES.get(outcome.mode, "structured_form")
+        if has_plan and current.request is not None and not outcome.free_text_refused:
+            assert current.request is not None
+            if outcome.questions or (
+                outcome.request is not None
+                and detect_changes(request_to_form(current.request), request_to_form(outcome.request))
+            ):
+                result = self._apply_replan(current, outcome, request_id=request_id)
+                result.input_mode = input_mode
+                return result
+        result = self._run_turn(current, outcome, request_id)
+        result.input_mode = input_mode
+        return result
 
     def _start_turn(self, session_id: str, request_id: str, trip_id: str) -> None:
         self.registry.start_turn(datetime.now(tz=UTC) + timedelta(seconds=self.limits.turn_deadline_s))
-        self.llm.start_turn()
+        self.llm.start_turn(
+            request_id=request_id,
+            session_id=session_id,
+            trip_id=trip_id,
+            attempt_sink=lambda event: self.storage.audit(
+                "llm_http_attempt",
+                request_id=request_id,
+                trip_id=trip_id,
+                session_id=session_id,
+                payload=event,
+            ),
+        )
         self._turn_notices = []
         self.storage.add_event(session_id, "turn_started", {"request_id": request_id})
         self.storage.audit("turn_started", request_id=request_id, trip_id=trip_id, session_id=session_id)
+
+    def _end_turn(self) -> None:
+        """Ход завершён: сброс привязки LLM к запросу (OBS-CONTEXT-03)."""
+        self.llm.attempt_sink = None
 
     def _run_turn(
         self,
@@ -1437,7 +1512,10 @@ class Orchestrator:
     def open_cart(self, *, trip_id: str, trip_revision: int, request_id: str) -> Cart:
         """Корзина по текущему плану. Новая ревизия поездки фиксирует корзину (REPLAN-02)."""
         session_id = self.storage.get_head(trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             state = self.storage.get_state(trip_id)
             plan = state.plan
@@ -1496,7 +1574,10 @@ class Orchestrator:
         """Демо-подтверждение. Повтор с тем же ``confirmation_id`` возвращает тот же чек (ARCH-05)."""
         cart = self.storage.get_cart(cart_id)
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=cart.trip_id, session_id=session_id),
+        ):
             existing = self.storage.get_receipt_by_confirmation(confirmation_id)
             if existing is not None:
                 if existing.cart_id != cart_id:
@@ -1570,7 +1651,10 @@ class Orchestrator:
         """Отказ: ничего не оформляется, чек не создаётся (UC-08)."""
         cart = self.storage.get_cart(cart_id)
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=cart.trip_id, session_id=session_id),
+        ):
             self._locked_head(cart.trip_id, trip_revision)
             state = self.storage.get_state(cart.trip_id)
             if cart.trip_revision != trip_revision or state.cart is None or state.cart.cart_id != cart_id:
@@ -1642,7 +1726,11 @@ class Orchestrator:
     ) -> TurnResult:
         """Явная пересборка по ``change_set`` (таблица REPLAN-01). Старая корзина теряет право подтверждения."""
         session_id = self.storage.get_head(trip_id)["session_id"]
-        with self.storage.session_lock(session_id), self._turn_lock:
+        with (
+            self.storage.session_lock(session_id),
+            self._turn_lock,
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             state = self.storage.get_state(trip_id)
             if state.request is None:
@@ -1651,10 +1739,16 @@ class Orchestrator:
             merged = {**request_to_form(state.request).model_dump(), **requested}
             form = StructuredForm.model_validate(merged)
             self._start_turn(session_id, request_id, trip_id)
-            outcome = interpret_structured_form(
-                form, session_id=session_id, request_id=request_id, demo_places=not self.live_data
-            )
-            return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
+            try:
+                outcome = interpret_structured_form(
+                    form, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+                )
+                return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
+            except Exception as exc:
+                self._turn_failed(session_id, request_id, trip_id, exc, time.perf_counter())
+                raise
+            finally:
+                self._end_turn()
 
     def _apply_replan(
         self,
@@ -2152,7 +2246,9 @@ class Orchestrator:
         self.storage.append_revision(state, request_id, agreed=agreed)
         self._audit_llm(state, request_id)
         self.storage.add_event(
-            state.session_id, "turn_finished", {"revision": state.revision, "status": state.status}
+            state.session_id,
+            "turn_finished",
+            {"revision": state.revision, "status": state.status, "request_id": request_id},
         )
         self.storage.audit(
             "turn_finished",
@@ -2197,3 +2293,91 @@ class Orchestrator:
                 "top_k": self.limits.top_k,
             },
         }
+
+
+# Stage 57: low-overhead, non-invasive phase timings; payload never includes user inputs.
+# OBS-SPAN-FAIL-01: диагностика не меняет бизнес-результат и не маскирует исходное исключение.
+# OBS-CONTEXT-03: атрибуция берётся из контекста конкретного запроса, а не из полей экземпляра.
+_SPAN_CONTEXT: ContextVar[dict[str, str | None] | None] = ContextVar("odin_span_context", default=None)
+_SPAN_KEYS = ("request_id", "trip_id", "session_id")
+
+
+@contextmanager
+def _span_scope(*, request_id: str | None, trip_id: str | None, session_id: str | None) -> Iterator[None]:
+    """Привязка этапных записей к конкретному запросу; сбрасывается после операции."""
+    token = _SPAN_CONTEXT.set({"request_id": request_id, "trip_id": trip_id, "session_id": session_id})
+    try:
+        yield
+    finally:
+        _SPAN_CONTEXT.reset(token)
+
+
+def _span_ids(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, str | None]:
+    """Идентификаторы из контекста и аргументов вызова: аргументы точнее и перекрывают контекст."""
+    ids = dict(_SPAN_CONTEXT.get() or {})
+    for key in _SPAN_KEYS:
+        value = kwargs.get(key)
+        if isinstance(value, str):
+            ids[key] = value
+    for value in args[1:]:
+        if isinstance(value, ToolRequest):
+            ids.setdefault("request_id", value.request_id)
+        for key in _SPAN_KEYS:
+            found = getattr(value, key, None)
+            if isinstance(found, str) and not ids.get(key):
+                ids[key] = found
+    return ids
+
+
+def _observed_stage(name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def timed(self: Any, *args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        status, error = "ok", None
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            status, error = "error", type(exc).__name__
+            raise
+        finally:
+            ids = _span_ids(args, kwargs)
+            for key in _SPAN_KEYS:  # запасной путь: контекст прошлых версий и прямые вызовы в тестах
+                if not ids.get(key):
+                    fallback = getattr(self, f"_observed_{key}", None)
+                    if isinstance(fallback, str):
+                        ids[key] = fallback
+            if ids.get("request_id"):
+                try:
+                    self.storage.audit(
+                        "pipeline_span",
+                        request_id=ids["request_id"],
+                        trip_id=ids.get("trip_id"),
+                        session_id=ids.get("session_id"),
+                        payload={
+                            "stage": name,
+                            "status": status,
+                            "error_code": error,
+                            "duration_ms": int((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                except Exception as exc:  # телеметрия не меняет результат и не маскирует ошибку
+                    logger.warning("pipeline_span not recorded (%s): %s", name, type(exc).__name__)
+
+    return timed
+
+
+for _stage in (
+    "_interpret",
+    "_compute_turn",
+    "_search",
+    "_build_plan",
+    "_connection_checks",
+    "_invoke",
+    "_persist",
+    "_apply_replan",
+    "open_cart",
+    "confirm_cart",
+    "decline_cart",
+):
+    if hasattr(Orchestrator, _stage):
+        setattr(Orchestrator, _stage, _observed_stage(_stage, getattr(Orchestrator, _stage)))

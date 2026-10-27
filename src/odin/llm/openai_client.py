@@ -22,6 +22,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from odin.logging_setup import get_logger
+
+logger = get_logger("llm")
+
 ChatStatus = Literal["ok", "error", "unavailable", "timeout"]
 
 # Хосты, для которых допустим HTTP без TLS: локальный сервер модели (Ollama, vLLM и т. п.).
@@ -109,6 +113,8 @@ class ChatCompletionsClient:
         max_wait_s: float = 2.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        before_post: Callable[[], None] | None = None,
+        on_attempt: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.allowed_host = validate_endpoint(base_url)
         self.url = chat_completions_url(base_url)
@@ -120,6 +126,8 @@ class ChatCompletionsClient:
         self.backoff_s = backoff_s
         self.max_wait_s = max_wait_s
         self.sleep = sleep
+        self.before_post = before_post
+        self.on_attempt = on_attempt
         self._headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         self._client = httpx.Client(timeout=timeout_s, transport=transport, follow_redirects=False)
 
@@ -154,19 +162,58 @@ class ChatCompletionsClient:
             return 1 + self.retries + (1 if compat_used else 0)
 
         while attempts < budget():
+            if self.before_post is not None:
+                self.before_post()  # fail closed, before every real HTTP POST
             attempts += 1
+            post_started = time.perf_counter()
+            response = None
+            post_error = None
             try:
                 response = self._client.post(
                     self.url, headers=self._headers, json=self._body(messages, compatible=compatible)
                 )
             except httpx.TimeoutException:
+                post_error = "timeout"
                 last = ChatResult("timeout", None, "timeout", None, attempts, elapsed())
                 continue
             except httpx.TransportError as exc:
+                post_error = "transport:" + type(exc).__name__
                 last = ChatResult(
                     "unavailable", None, f"transport:{type(exc).__name__}", None, attempts, elapsed()
                 )
                 continue
+            finally:
+                if self.on_attempt is not None:
+                    usage = {}
+                    if response is not None:
+                        try:
+                            raw = response.json()
+                            if isinstance(raw, dict) and isinstance(raw.get("usage"), dict):
+                                usage = raw["usage"]
+                        except (ValueError, TypeError):
+                            pass
+                    try:
+                        self.on_attempt(
+                            {
+                                "model": self.model,
+                                "status": "error" if post_error else "http",
+                                "http_status": response.status_code if response is not None else None,
+                                "error_code": post_error,
+                                "compatibility": compatible,
+                                "latency_ms": int((time.perf_counter() - post_started) * 1000),
+                                "prompt_tokens": usage.get("prompt_tokens")
+                                if isinstance(usage.get("prompt_tokens"), int)
+                                else None,
+                                "completion_tokens": usage.get("completion_tokens")
+                                if isinstance(usage.get("completion_tokens"), int)
+                                else None,
+                                "usage_status": "reported" if usage else "missing",
+                                "cost_status": "unknown",
+                                "cost_amount": None,
+                            }
+                        )
+                    except Exception as exc:  # телеметрия не меняет бизнес-результат (OBS-SPAN-FAIL-01)
+                        logger.warning("llm attempt sink failed: %s", type(exc).__name__)
             code = response.status_code
             if code == 400 and not compatible and (self.json_mode or self.temperature is not None):
                 compatible = True

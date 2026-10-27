@@ -39,9 +39,9 @@ def test_turns_of_different_sessions_do_not_overlap(
     original_start = LlmGateway.start_turn
     original_compute = Orchestrator._compute_turn
 
-    def start_turn(self: LlmGateway) -> None:
+    def start_turn(self: LlmGateway, **kwargs: Any) -> None:
         started.append(threading.current_thread().name)
-        original_start(self)
+        original_start(self, **kwargs)
 
     def compute(self: Orchestrator, *args: Any, **kwargs: Any) -> Any:
         if threading.current_thread().name == "first":
