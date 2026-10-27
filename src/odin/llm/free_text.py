@@ -372,16 +372,64 @@ def _city_pattern(name: str) -> str:
     return _WORD_START + "".join(pieces) + _WORD_END
 
 
-def _city_evidence_matches(item: TextValue) -> bool:
+_ROLE_MARKER = re.compile(r"(?:^|[\s,.;:!?()])(не\s+)?(из|изо|от|в|во|до|к|ко|на)\s+$")
+_ORIGIN_MARKERS = frozenset({"из", "изо", "от"})
+_WORD_TOKEN = re.compile(r"[а-яa-z0-9]{2,}")
+
+
+def _roles_at(span: str, starts: list[int]) -> list[str]:
+    """Роль каждого упоминания по предлогу непосредственно перед ним (INT-ROLE).
+
+    ``origin`` — «из/изо/от», ``destination`` — «в/во/до/к/ко/на», ``not_*`` — предлог с отрицанием
+    («не из Москвы»), ``none`` — предлога роли нет.
+    """
+    roles: list[str] = []
+    for start in starts:
+        marker = _ROLE_MARKER.search(span[:start])
+        if marker is None:
+            roles.append("none")
+            continue
+        role = "origin" if marker.group(2) in _ORIGIN_MARKERS else "destination"
+        roles.append(f"not_{role}" if marker.group(1) else role)
+    return roles
+
+
+def _span_roles(span: str) -> set[str]:
+    """Роли, которые текст цитаты вообще называет: нужно, чтобы отличить маршрут от одного города."""
+    starts = [match.start() for match in _WORD_TOKEN.finditer(span)]
+    return {role for role in _roles_at(span, starts) if role in ("origin", "destination")}
+
+
+def _city_evidence_matches(item: TextValue, field_name: str | None = None) -> bool:
     """INT-002: город модели должен быть назван в цитате — в любом падеже или известным сокращением.
-    «Из Москвы» → «Сочи» отклоняется; «из Орла» → «Орёл», «в Ростове-на-Дону» → «Ростов-на-Дону» принимаются."""
+    «Из Москвы» → «Сочи» отклоняется; «из Орла» → «Орёл», «в Ростове-на-Дону» → «Ростов-на-Дону» принимаются.
+
+    INT-ROLE: если цитата называет оба направления («из X в Y»), город с предлогом противоположной роли не
+    принимается за это поле; «не из X» роль не подтверждает. Когда роль в цитате одна или не выражена,
+    действует прежняя проверка упоминания — иначе обычные запросы вроде «в Казань» теряли бы город."""
     city = _norm(item.value)
     span = _norm(item.span)
     names = {city}
     for canonical, aliases in _CITY_ALIASES.items():
         if city == canonical or city in aliases:
             names |= {canonical, *aliases}
-    return any(re.search(_city_pattern(name), span) for name in names)
+    starts: list[int] = []
+    seen: set[int] = set()
+    for name in names:
+        for match in re.finditer(_city_pattern(name), span):
+            if match.start() not in seen:
+                seen.add(match.start())
+                starts.append(match.start())
+    roles = _roles_at(span, sorted(starts))
+    if not roles:
+        return False
+    if field_name not in ("origin", "destination"):
+        return True
+    if field_name in roles or all(role == "none" for role in roles):
+        return True
+    if f"not_{field_name}" in roles:
+        return False  # «не из Москвы»: отправление этим городом не подтверждено
+    return field_name not in _span_roles(span)
 
 
 # INT-003: обязательность, явно выраженная в цитате, определяется кодом (промпт, правило 6).
@@ -585,8 +633,9 @@ def apply_delta(
             reason = "фрагмент не найден в сообщении"
         elif not _numeric_evidence_matches(name, item):
             reason = "число не совпадает с названным в сообщении"  # INT-001/INT-004
-        elif name in ("origin", "destination") and not _city_evidence_matches(item):  # type: ignore[arg-type]
-            reason = "город не назван в цитате"  # INT-002
+        elif name in ("origin", "destination") and not _city_evidence_matches(item, name):  # type: ignore[arg-type]
+            mentioned = _city_evidence_matches(item)  # INT-002: город назван, но в другой роли (INT-ROLE)
+            reason = "город назван в другой роли" if mentioned else "город не назван в цитате"
         else:
             report.accepted.append(name)
             return True
