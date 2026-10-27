@@ -17,6 +17,9 @@
     Live-данные — на момент запроса; покупка только демонстрационная.
     <span id="llm-notice">Свободный диалог недоступен без LLM (DEC-08) — используйте форму.</span>
   </p>
+  <p class="notice mock-banner" id="mock-banner" data-testid="mock-banner" hidden>
+    Демонстрационный режим. Предложения, цены и доступность могут быть синтетическими.
+  </p>
 
   <main class="layout">
     <section class="chat" aria-label="Чат">
@@ -29,9 +32,10 @@
         <button type="submit">Отправить текст</button>
       </form>
 
+      <details id="structured-details" class="structured" open>
+      <summary>Форма запроса (без LLM)</summary>
       <form id="trip-form" class="trip-form" data-testid="structured-form">
         <fieldset>
-          <legend>Структурированный запрос</legend>
           <label>Откуда <input name="origin" value="Москва" maxlength="120"></label>
           <label>Куда <input name="destination" value="Казань" maxlength="120" placeholder="пусто — вдохновение"></label>
           <label>Дата отъезда <input name="date_from" type="date"></label>
@@ -56,6 +60,7 @@
           <button type="submit">Подобрать</button>
         </fieldset>
       </form>
+      </details>
     </section>
 
     <aside class="trip" aria-label="Моя поездка" data-testid="trip-panel">
@@ -64,12 +69,13 @@
       <div id="trip-summary" data-testid="trip-summary"><p class="muted">Запрос ещё не задан.</p></div>
       <h3>Варианты</h3>
       <div id="cards" class="cards" data-testid="cards"></div>
-      <h3>Условия</h3>
-      <ul id="constraints" class="constraints" data-testid="constraints"></ul>
+      <div id="selection-bar" class="selection-bar" data-testid="selection-bar" hidden></div>
       <div class="actions">
         <button id="cart-btn" type="button" aria-disabled="true" class="inactive" data-testid="cart-button">Сформировать корзину</button>
         <p id="cart-hint" class="meta" data-testid="cart-hint" aria-live="polite"></p>
       </div>
+      <h3>Условия</h3>
+      <ul id="constraints" class="constraints" data-testid="constraints"></ul>
       <section id="cart" class="cart" data-testid="cart" hidden></section>
       <section id="receipt" class="receipt" data-testid="receipt" hidden></section>
     </aside>

@@ -81,6 +81,20 @@ function availabilityText(availability) {
   return `Наличие: ${label} (${EVIDENCE[availability.evidence_level] || availability.evidence_level})`;
 }
 
+// UI-004: для ДЕМО-данных непроверенное наличие уже сказано общим баннером и бейджем «ДЕМО» на карточке;
+// для Live/Replay строка наличия остаётся на каждой карточке без сокращений.
+function availabilityLines(availability) {
+  const demoUnknown = availability.data_mode === "mock" && availability.availability_status === "unknown";
+  return demoUnknown ? [] : [availabilityText(availability)];
+}
+
+const MOCK_AVAILABILITY_UNKNOWN = /^наличие \(.+\) не подтверждено источником$/;
+
+function visibleUnknowns(plan) {
+  if (plan.trip_data_mode !== "mock") return plan.unknowns;
+  return plan.unknowns.filter((item) => !MOCK_AVAILABILITY_UNKNOWN.test(item));
+}
+
 function asOf(source) {
   const moment = source && (source.retrieved_at || source.generated_at);
   return moment ? new Date(moment).toLocaleString("ru-RU") : "—";
@@ -119,7 +133,7 @@ function renderTrip(trip) {
       el("p", { "data-testid": "plan-total" }, `Итог: ${money(plan.total_price)} — стоимость ${COMPLETENESS[plan.completeness]}`),
       el("p", { class: "meta" }, `Режим поездки: ${MODE_LABELS[plan.trip_data_mode] || plan.trip_data_mode}`),
     );
-    if (plan.unknowns.length) summary.append(el("p", { class: "meta" }, "Не подтверждено: " + plan.unknowns.join("; ")));
+    if (visibleUnknowns(plan).length) summary.append(el("p", { class: "meta" }, "Не подтверждено: " + visibleUnknowns(plan).join("; ")));
     for (const check of plan.connection_checks) {
       summary.append(el("p", { class: `status-${check.status}`, "data-testid": "connection-check" },
         `Стык ${ROLE_LABELS[check.from_component] || check.from_component} → ${ROLE_LABELS[check.to_component] || check.to_component}: ${STATUS[check.status]} (${check.basis})`));
@@ -134,17 +148,33 @@ function renderTrip(trip) {
   cards.replaceChildren();
   const hotels = Object.fromEntries((trip.hotels || []).map((hotel) => [hotel.hotel_id, hotel]));
   const chosen = new Set((plan ? plan.components : []).map((component) => component.offer_id));
+  // UI-002: три колонки «туда | гостиница | обратно»; пустая колонка — честное пустое состояние.
+  const columns = { outbound: [], hotel: [], return: [] };
   for (const offer of trip.transport_offers || []) {
-    const node = card(offer.title, `${offer.direction === "outbound" ? "Туда" : "Обратно"}: ${new Date(offer.departure_at).toLocaleString("ru-RU")} → ${new Date(offer.arrival_at).toLocaleString("ru-RU")}`, offer.price, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
+    const node = card(offer.title, `${offer.direction === "outbound" ? "Туда" : "Обратно"}: ${new Date(offer.departure_at).toLocaleString("ru-RU")} → ${new Date(offer.arrival_at).toLocaleString("ru-RU")}`, offer.price, offer.source, offer.source.data_mode, availabilityLines(offer.availability));
     makeSelectable(node, offer.direction, offer.offer_id, offer.title, chosen.has(offer.offer_id));
-    cards.append(node);
+    (columns[offer.direction] || columns.outbound).push(node);
   }
   for (const offer of trip.hotel_offers || []) {
     const hotel = hotels[offer.hotel_id] || {};
     const stars = hotel.star_rating == null ? "категория не указана" : `${hotel.star_rating}★`;
-    const node = card(hotel.name || offer.hotel_id, `${stars}; завтрак: ${offer.terms.breakfast_included == null ? "не подтверждён" : offer.terms.breakfast_included ? "да" : "нет"}`, offer.price_total, offer.source, offer.source.data_mode, [availabilityText(offer.availability)]);
+    const node = card(hotel.name || offer.hotel_id, `${stars}; завтрак: ${offer.terms.breakfast_included == null ? "не подтверждён" : offer.terms.breakfast_included ? "да" : "нет"}`, offer.price_total, offer.source, offer.source.data_mode, availabilityLines(offer.availability));
     makeSelectable(node, "hotel", offer.offer_id, hotel.name || offer.hotel_id, chosen.has(offer.offer_id));
-    cards.append(node);
+    columns.hotel.push(node);
+  }
+  const hasOffers = Object.values(columns).some((items) => items.length);
+  if (hasOffers) {
+    const titles = { outbound: "Транспорт туда", hotel: "Гостиница", return: "Транспорт обратно" };
+    const grid = el("div", { class: "offer-columns", "data-testid": "offer-columns" });
+    for (const role of ["outbound", "hotel", "return"]) {
+      const empty = role === "return" && trip.request && trip.request.return_trip === false
+        ? "обратный путь не нужен"
+        : "вариантов не найдено (это не значит, что их нет)";
+      grid.append(el("div", { class: "offer-column", "data-testid": `column-${role}` },
+        el("h4", {}, titles[role]),
+        ...(columns[role].length ? columns[role] : [el("p", { class: "meta empty" }, empty)])));
+    }
+    cards.append(grid);
   }
   for (const offer of trip.transfer_options || []) {
     cards.append(card(offer.title, `Время: ~${offer.duration_minutes} мин (оценка)`, offer.price, offer.source, offer.source.data_mode, offer.limitations));
@@ -168,6 +198,32 @@ function renderTrip(trip) {
     constraints.append(el("li", { class: `status-${evaluation.status}` }, `${label}${role ? ", " + role : ""}: ${STATUS[evaluation.status]} — ${evaluation.reason}`));
   }
   updateCartButton(trip);
+  renderSelectionBar(trip);
+}
+
+function renderSelectionBar(trip) {
+  const bar = $("selection-bar");
+  bar.replaceChildren();
+  const plan = trip.plan;
+  if (!plan || !plan.components.length) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const titles = { outbound: "Туда", hotel: "Гостиница", return: "Обратно" };
+  for (const component of plan.components) {
+    if (!titles[component.role]) continue;
+    bar.append(el("div", { "data-testid": `selected-${component.role}` }, `${titles[component.role]}: ${component.title}`));
+  }
+  bar.append(el("div", { class: "total", "data-testid": "selection-total" }, `Итого: ${money(plan.total_price)} — стоимость ${COMPLETENESS[plan.completeness]}`));
+  const constraints = (trip.request && trip.request.constraints) || [];
+  const budget = constraints.find((c) => c.field === "budget_total");
+  if (budget) {
+    const evaluation = (trip.constraint_evaluations || []).find((e) => e.constraint_id === budget.constraint_id && !e.component_id);
+    const limit = money({ amount: String(budget.value), currency: trip.request.budget ? trip.request.budget.currency : "RUB" });
+    const status = evaluation ? STATUS[evaluation.status] : "не оценено";
+    bar.append(el("div", { class: evaluation ? `status-${evaluation.status}` : "", "data-testid": "selection-budget" }, `Бюджет: до ${limit} — ${status}`));
+  }
 }
 
 // CART-UI-001: кнопка не «молчит». Если корзину собрать нельзя, нажатие объясняет причину.
@@ -316,10 +372,13 @@ async function ensureSession() {
   const dataMode = state.session.data_mode;
   $("mode-badge").textContent = `Данные: ${dataMode === "mixed" ? "Live (при сбое — ДЕМО)" : MODE_LABELS[dataMode] || dataMode}`;
   $("mode-badge").className = `badge badge-${dataMode === "mock" ? "mock" : "live"}`;
+  $("mock-banner").hidden = dataMode !== "mock";
   if (state.session.llm_mode === "live") {
     $("llm-notice").textContent = state.session.privacy_notice ||
       "LLM подключён: опишите поездку своими словами. Цены, даты и условия проверяет код, а не модель.";
     $("text-label").textContent = "Опишите поездку или изменение условий (текст уйдёт LLM-провайдеру)";
+    // UI-003: при работающем LLM форма — запасной путь; свёрнута, но доступна (DEC-08 без LLM — раскрыта).
+    $("structured-details").open = false;
   } else if (state.session.llm_mode === "replay") {
     $("llm-notice").textContent = "LLM в режиме Replay: понимаются только заранее записанные фразы.";
   }

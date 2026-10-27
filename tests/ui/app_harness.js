@@ -126,6 +126,13 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
 (async () => {
   const out = {};
   await until(() => requests.some((r) => r.path.endsWith("/sessions")) && sandbox.document && byId.revision.textContent, "session");
+  if (process.env.HARNESS_MODE === "session") {
+    out.llm_badge = textOf("llm-badge");
+    out.structured_open = byId["structured-details"] ? byId["structured-details"].open !== false : null;
+    out.post_requests = requests.filter((r) => r.method === "POST").map((r) => r.path.replace(/\/(s|t)-[0-9a-f]+/g, "/$1-*"));
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
 
   // CART-UI-001: нажатие без плана не «молчит».
   const before = messages().length;
@@ -146,6 +153,15 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
   out.roles = [...new Set(selectableCards().map((c) => c.getAttribute("data-role")))].sort();
   out.initial = { hotel: selected("hotel"), outbound: selected("outbound"), return: selected("return") };
   out.cart_hint_with_plan = textOf("cart-hint");
+  // P2: колонки, панель выбора, баннер Mock, повторы пометок, свёрнутая форма.
+  const testids = [];
+  byId.cards.walk((node) => { if (node.getAttribute && node.getAttribute("data-testid")) testids.push(node.getAttribute("data-testid")); });
+  out.columns = testids.filter((t) => t.startsWith("column-"));
+  out.mock_banner_hidden = byId["mock-banner"] ? byId["mock-banner"].hidden : null;
+  out.selection_bar = textOf("selection-bar");
+  out.selection_bar_hidden = byId["selection-bar"] ? byId["selection-bar"].hidden : null;
+  out.demo_card_availability_lines = selectableCards().filter((c) => c.textContent.includes("Наличие: не подтверждено (ДЕМО)")).length;
+  out.structured_open = byId["structured-details"] ? byId["structured-details"].open !== false : null;
 
   // UI-001: выбор другой гостиницы.
   const altHotel = selectableCards().find((c) => c.getAttribute("data-role") === "hotel" && !c.classList.contains("selected"));
