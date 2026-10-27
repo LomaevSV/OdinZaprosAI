@@ -1,0 +1,4 @@
+services:
+  app:
+    environment:
+      ODIN_LLM_MODE: "live"

@@ -48,3 +48,6 @@ reports/raw/
 # IDE
 .idea/
 .vscode/
+
+# VPS local backups
+*.bak-before-*
