@@ -231,24 +231,28 @@ class LlmGateway:
         }
 
     def _before_post(self) -> None:
-        """OBS-ATTEMPT-DURABILITY-02: квота и устойчивая запись ``started`` до реального POST.
+        """OBS-NO-SINK-04 / OBS-ATTEMPT-DURABILITY-02: квота и устойчивая запись ``started`` до POST.
 
         Порядок: сначала квота (превышение — ``LlmBudgetExceeded``, POST не отправляется и записи нет),
-        затем запись резервации. Если запись не удалась, платный POST не отправляется (fail-closed):
-        неизвестный расход без следа хуже, чем пропущенная попытка.
+        затем запись резервации. Платный POST без устойчивой диагностики недопустим (fail-closed):
+        нет sink или запись не удалась — ``LlmAttemptNotRecorded``, POST не отправляется.
+        Неизвестный расход без следа хуже, чем пропущенная попытка.
         """
         self.budget.take_http()
         self._attempt_index += 1
         attempt_id = uuid.uuid4().hex
         record = {**self._attempt_context(attempt_id), "phase": "started", "status": "pending"}
-        if self.attempt_sink is not None:
-            try:
-                self.attempt_sink(record)
-            except Exception as exc:
-                logger.warning("llm attempt reservation not recorded: %s", type(exc).__name__)
-                raise LlmAttemptNotRecorded(
-                    "llm_attempt_not_recorded: платный POST отменён, расход не подтверждён диагностикой"
-                ) from exc
+        if self.attempt_sink is None:
+            raise LlmAttemptNotRecorded(
+                "llm_attempt_not_recorded: платный POST запрещён без обязательного attempt_sink"
+            )
+        try:
+            self.attempt_sink(record)
+        except Exception as exc:
+            logger.warning("llm attempt reservation not recorded: %s", type(exc).__name__)
+            raise LlmAttemptNotRecorded(
+                "llm_attempt_not_recorded: платный POST отменён, расход не подтверждён диагностикой"
+            ) from exc
         self._attempt_pending = {"attempt_id": attempt_id}
 
     def _on_attempt(self, event: dict[str, Any]) -> None:
