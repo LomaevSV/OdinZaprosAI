@@ -970,13 +970,14 @@ class Orchestrator:
         return self._finish_search(state, collector, request)
 
     @staticmethod
-    def _hotel_facts(offer: Any, hotel: Any) -> OfferFacts:
+    def _hotel_facts(offer: Any, hotel: Any, request: TripRequest) -> OfferFacts:
         return OfferFacts(
             component_id=offer.offer_id,
             role="hotel",
             total_amount=offer.price_total.amount,
             currency=offer.currency,
             price_completeness=offer.price_total.total_completeness,
+            budget_currency=request.budget.currency if request.budget else None,
             pets_allowed=hotel.pets_allowed if hotel else None,
             breakfast_included=offer.terms.breakfast_included,
             star_rating=hotel.star_rating if hotel else None,
@@ -1001,7 +1002,8 @@ class Orchestrator:
                 offer.offer_id,
                 aggregate_statuses(
                     evaluate_constraints(
-                        request.constraints, self._hotel_facts(offer, hotel_by_id.get(offer.hotel_id))
+                        request.constraints,
+                        self._hotel_facts(offer, hotel_by_id.get(offer.hotel_id), request),
                     )
                 ),
                 required_ids,
@@ -1179,7 +1181,7 @@ class Orchestrator:
 
         for offer in state.hotel_offers:
             hotel = hotel_by_id.get(offer.hotel_id)
-            facts = self._hotel_facts(offer, hotel)
+            facts = self._hotel_facts(offer, hotel, request)
             candidates.setdefault("hotel", []).append(
                 (offer.offer_id, offer, evaluate_constraints(request.constraints, facts))
             )
@@ -1190,6 +1192,7 @@ class Orchestrator:
                 total_amount=offer.price.amount,
                 currency=offer.price.currency,
                 price_completeness=offer.price.total_completeness,
+                budget_currency=request.budget.currency if request.budget else None,
                 transport_mode=offer.kind,
                 pets_allowed=offer.pets_allowed,
                 evidence=(f"{offer.source.provider}:{offer.source.tool}",),
