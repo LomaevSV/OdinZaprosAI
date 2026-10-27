@@ -118,6 +118,16 @@ def sum_prices_or_unresolved(
         )
 
 
+def known_amount_in_currency(prices: Iterable[Price], currency: str) -> Decimal | None:
+    """Сумма известных частей только в указанной валюте (MIXED-LOWER-BOUND-02); ``None`` — таких частей нет.
+
+    Это нижняя граница итога в этой валюте: суммы ``Money`` неотрицательны (контракт ``ge=0``), а другие
+    валюты не пересчитываются и не складываются (DEC-17). Вызывающий отвечает за уникальность компонентов.
+    """
+    amounts = [price.amount for price in prices if price.amount is not None and price.currency == currency]
+    return sum(amounts, ZERO) if amounts else None
+
+
 def price_comparability(prices: Iterable[Price]) -> str:
     """Сопоставимость цен (план §2.23): подписанное поле, не заменяет ``completeness``."""
     items = list(prices)

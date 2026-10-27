@@ -30,6 +30,7 @@ from odin.contracts import (
     TripState,
 )
 from odin.contracts.api import StructuredForm
+from odin.contracts.common import Deviation
 from odin.contracts.plan import CartItem
 from odin.core.cart import CartError, CartStaleError, build_cart, confirm_cart, decline_cart
 from odin.core.clarify import detect_changes, merge_answer
@@ -40,7 +41,7 @@ from odin.core.constraints import (
     rank_key,
     sort_by_rank,
 )
-from odin.core.money import sum_prices_or_unresolved, total_price
+from odin.core.money import known_amount_in_currency, sum_prices_or_unresolved, total_price
 from odin.core.replan import changed_groups, invalidated_roles, split_change_set
 from odin.core.tree import coverage, tradeoffs
 from odin.core.trip import (
@@ -1300,7 +1301,9 @@ class Orchestrator:
         total = total_price(totals, plan_source, as_of)
 
         checks = self._connection_checks(selected, hotel_by_id)
-        budget_evaluation = self._budget_evaluation(request, total, state, plan_id=plan_id)
+        budget_evaluation = self._budget_evaluation(
+            request, total, state, plan_id=plan_id, component_prices=prices
+        )
         if budget_evaluation is not None:
             evaluations.append(budget_evaluation)
 
@@ -1904,7 +1907,13 @@ class Orchestrator:
         return risks
 
     def _budget_evaluation(
-        self, request: TripRequest, total: Price, state: TripState, *, plan_id: str | None = None
+        self,
+        request: TripRequest,
+        total: Price,
+        state: TripState,
+        *,
+        plan_id: str | None = None,
+        component_prices: list[Price] | None = None,
     ) -> ConstraintEvaluation | None:
         """Бюджет поездки — по итогу плана (план §2.10 п. 4, §2.23)."""
         constraint = next((item for item in request.constraints if item.field == "budget_total"), None)
@@ -1920,6 +1929,21 @@ class Orchestrator:
         currency_unresolved = total.unknown_reason == "currency_unresolved"
         if currency_unresolved and status == "unknown":
             reason = "стоимости в разных валютах: итог не вычислен без проверенного курса (DEC-17)"
+            # MIXED-LOWER-BOUND-02: известные части в валюте бюджета — нижняя граница итога (суммы
+            # неотрицательны, роли компонентов уникальны). Превышение доказано и без пересчёта других валют;
+            # иначе итог остаётся неизвестным, но не matched.
+            lower = known_amount_in_currency(component_prices or [], request.budget.currency)
+            if lower is not None and lower > request.budget.amount:
+                status = "violated"
+                deviation = Deviation(
+                    amount=lower - request.budget.amount,
+                    unit=request.budget.currency,
+                    description="известная часть в валюте бюджета превышает бюджет; другие валюты не учтены",
+                )
+                reason = (
+                    "известная часть стоимости в валюте бюджета больше бюджета; "
+                    "компоненты в других валютах не учтены (DEC-17)"
+                )
         return ConstraintEvaluation(
             constraint_id=constraint.constraint_id,
             component_id=None,
