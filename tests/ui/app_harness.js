@@ -129,6 +129,8 @@ class FormData {
 }
 
 const requests = [];
+// TRF-SELECT-01: подмена ответа сервера для синтетической поездки (режим «routes»); null — запрос в API.
+let stubReply = null;
 // UI-011: однократный сбой связи для заданного текста — как «нет сети» в браузере (fetch отклоняется).
 let netFailText = process.env.HARNESS_NET_FAIL_TEXT || null;
 async function fetchProxy(url, options = {}) {
@@ -138,6 +140,8 @@ async function fetchProxy(url, options = {}) {
     throw new TypeError("Failed to fetch");
   }
   requests.push({ method: options.method || "GET", path: String(url).replace(/\?.*/, ""), body });
+  const stubbed = stubReply && stubReply(String(url), options.method || "GET", body);
+  if (stubbed) return new Response(JSON.stringify(stubbed), { status: 200, headers: { "Content-Type": "application/json" } });
   return fetch(BASE + url, options);
 }
 
@@ -485,6 +489,82 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     }
     out.messages = byId.messages.children.map((child) => ({ role: child.className, text: child.textContent }));
     out.visible_text = visibleText();
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
+  if (process.env.HARNESS_MODE === "routes") {
+    // TRF-SELECT-01: 20 маршрутов OSRM для 10 гостиниц; в «Как добраться» — только маршруты гостиницы плана.
+    // Поездка синтетическая (Live-подобные данные без сети); выбор гостиницы — настоящий клик по карточке,
+    // ответ сервера подменяется планом, как его собирает сервер (пара «точка прибытия ↔ гостиница плана»).
+    const now = new Date().toISOString();
+    const source = (provider, tool) => ({ provider, tool, data_mode: "live", retrieved_at: now });
+    const unknownPrice = { amount: null, currency: null, price_scope: "unknown", total_completeness: "unknown", source: source("osrm_demo", "table") };
+    const hotels = Array.from({ length: 10 }, (_, i) => ({ hotel_id: `h${i}`, name: i === 7 ? "AZIMUT Парк Отель Виноградная Сочи" : `Отель ${i}`, star_rating: 4 }));
+    const hotelOffers = hotels.flatMap((h) => (h.hotel_id === "h7" ? ["A", "B"] : ["A"]).map((tariff) => ({
+      offer_id: `${h.hotel_id}-${tariff}`, hotel_id: h.hotel_id, terms: { breakfast_included: tariff === "B" },
+      price_total: { amount: tariff === "B" ? "12000.00" : "10000.00", currency: "RUB", total_completeness: "complete" },
+      source: source("tutu", "search_hotels"), availability: { data_mode: "live", availability_status: "unknown", evidence_level: "search_listing" },
+    })));
+    // Обратный маршрут идёт в выдаче раньше прямого: порядок показа задаёт интерфейс.
+    const routes = hotels.flatMap((h) => ["transfer_out", "transfer_in"].map((direction) => ({
+      offer_id: `OSRM-${direction}-st-sochi-${h.hotel_id}`, kind: "transfer", direction,
+      title: direction === "transfer_in" ? `Трансфер на автомобиле: Сочи (вокзал) → ${h.name}` : `Трансфер на автомобиле: ${h.name} → Сочи (вокзал)`,
+      parameters: { hotel_id: h.hotel_id, point_id: "st-sochi", direction }, duration_minutes: 21,
+      terms: { informational: true, distance_km: 8.4 }, price: unknownPrice, source: source("osrm_demo", "table"), limitations: [],
+    })));
+    let revision = 1;
+    const tripFor = (offerId, withRoutes = true) => {
+      const offer = hotelOffers.find((o) => o.offer_id === offerId);
+      const hotel = hotels.find((h) => h.hotel_id === offer.hotel_id);
+      const planned = withRoutes ? routes.filter((r) => r.parameters.hotel_id === offer.hotel_id).reverse() : [];
+      return {
+        trip_id: "t-routes", revision, request: null, hotels, hotel_offers: hotelOffers, transport_offers: [], transfer_options: routes,
+        constraint_evaluations: [], search_termination: null, candidate_destinations: [], status: "planned",
+        plan: {
+          plan_id: `P-t-routes-${revision}`, trip_revision: revision, total_price: { amount: null, currency: null, total_completeness: "partial" },
+          completeness: "partial", trip_data_mode: "live", unknowns: [], connection_checks: [],
+          components: [
+            { component_id: "hotel", role: "hotel", offer_id: offer.offer_id, kind: "hotel", title: hotel.name, data_mode: "live" },
+            ...planned.map((r) => ({ component_id: r.direction, role: r.direction, offer_id: r.offer_id, kind: "transfer", title: r.title, data_mode: "live" })),
+          ],
+        },
+      };
+    };
+    stubReply = (url, method, body) => {
+      if (method !== "POST" || !url.endsWith("/trips/t-routes/selections")) return null;
+      revision += 1;
+      return tripFor(body.selections.hotel);
+    };
+    const snapshot = () => {
+      const section = byTestid(byId.cards, "transfer-section")[0];
+      if (!section) return null;
+      const cards = byTestid(section, "route-card");
+      return {
+        title: findAll(section, (n) => n.classList && n.classList.contains("column-title")).map((n) => n.textContent)[0],
+        text: section.textContent,
+        route_ids: cards.map((c) => c.getAttribute("data-route-id")),
+        directions: cards.map((c) => c.getAttribute("data-direction")),
+        card_texts: cards.map((c) => c.textContent),
+        clickable: cards.filter((c) => c.getAttribute("role") === "button" || c.getAttribute("tabindex") !== null || c.classList.contains("selectable") || Object.keys(c.listeners).length).length,
+        offer_cards: byTestid(section, "offer-card").length,
+        empty: byTestid(section, "route-empty").map((n) => n.textContent),
+      };
+    };
+    const choose = async (offerId) => {
+      const sent = count("POST", "/selections");
+      await selectableCards().find((c) => c.getAttribute("data-offer-id") === offerId).dispatch("click");
+      await until(() => count("POST", "/selections") > sent && !vm.runInContext("state.busy", sandbox), `hotel ${offerId}`);
+      return snapshot();
+    };
+    vm.runInContext("renderTrip", sandbox)(tripFor("h7-A"));
+    out.routes_total = routes.length;
+    out.initial = snapshot();
+    out.after_change = await choose("h3-A");
+    out.after_tariff_a = await choose("h7-A");
+    out.after_tariff_b = await choose("h7-B");
+    vm.runInContext("renderTrip", sandbox)(tripFor("h7-A", false));
+    out.without_routes = snapshot();
     process.stdout.write(JSON.stringify(out) + "\n");
     return;
   }

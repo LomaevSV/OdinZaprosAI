@@ -183,7 +183,7 @@ def test_column_headings_and_separate_transfers(observed: dict[str, Any]) -> Non
     assert [title.split(" (")[0] for title in titles[:3]] == ["Транспорт туда", "Гостиницы", "Транспорт обратно"]
     assert all(title.endswith(")") for title in titles[:3]), "у заголовка колонки — число вариантов"
     assert observed["column_labelled"] == ["column-title-outbound", "column-title-hotel", "column-title-return"]
-    assert observed["transfer_section"] and observed["transfer_section"][0].startswith("Трансферы")
+    assert observed["transfer_section"] and observed["transfer_section"][0].startswith("Как добраться")
     assert observed["transfers_inside_columns"] is False, "трансфер не внутри колонки «Транспорт обратно»"
 
 
@@ -196,7 +196,57 @@ def test_cart_follows_trip_order_with_separate_transfers(observed: dict[str, Any
     for role, roles in observed["cart_items_by_section"].items():
         assert set(roles) == {role}, (role, roles)
     if "transfer_in" in sections:
-        assert "Трансфер туда: к гостинице" in observed["cart_section_titles"]
+        assert "Как добраться: к гостинице (справочно)" in observed["cart_section_titles"]
+        assert "справочный маршрут, не бронируется" in observed["cart_text"]
+
+
+# ---------------------------------------------------------------- TRF-SELECT-01: «Как добраться»
+
+AZIMUT = "AZIMUT Парк Отель Виноградная Сочи"
+
+
+def _route_ids(hotel_id: str) -> list[str]:
+    return [f"OSRM-transfer_in-st-sochi-{hotel_id}", f"OSRM-transfer_out-st-sochi-{hotel_id}"]
+
+
+@pytest.fixture
+def routes(server: str) -> dict[str, Any]:
+    return _run(server, "routes")
+
+
+@pytest.mark.req("TRF-SELECT-01")
+def test_only_routes_of_selected_hotel_are_shown(routes: dict[str, Any]) -> None:
+    assert routes["routes_total"] == 20, "в данных 20 маршрутов для 10 гостиниц"
+    initial = routes["initial"]
+    assert initial["route_ids"] == _route_ids("h7"), "только маршруты выбранной гостиницы"
+    assert initial["directions"] == ["transfer_in", "transfer_out"], "сначала к гостинице, затем обратно"
+    assert all(AZIMUT in text for text in initial["card_texts"])
+    assert initial["title"] == "Как добраться (2)"
+    assert "Справочные автомобильные маршруты, а не услуги бронирования" in initial["text"]
+    assert initial["clickable"] == 0 and initial["offer_cards"] == 0, "справочные карточки не выбираются"
+    assert all("Стоимость: неизвестна" in text for text in initial["card_texts"]), "цена не придумывается"
+    assert not any("₽" in text for text in initial["card_texts"])
+    assert initial["empty"] == []
+
+
+@pytest.mark.req("TRF-SELECT-01")
+def test_routes_follow_hotel_change(routes: dict[str, Any]) -> None:
+    after = routes["after_change"]
+    assert after["route_ids"] == _route_ids("h3")
+    assert all("Отель 3" in text and AZIMUT not in text for text in after["card_texts"])
+
+
+@pytest.mark.req("TRF-SELECT-01")
+def test_hotel_tariffs_do_not_change_routes(routes: dict[str, Any]) -> None:
+    assert routes["after_tariff_a"]["route_ids"] == _route_ids("h7")
+    assert routes["after_tariff_b"]["route_ids"] == _route_ids("h7"), "другой тариф той же гостиницы — те же маршруты"
+
+
+@pytest.mark.req("TRF-SELECT-01")
+def test_missing_routes_show_honest_message(routes: dict[str, Any]) -> None:
+    empty = routes["without_routes"]
+    assert empty["route_ids"] == [] and empty["title"] == "Как добраться"
+    assert empty["empty"] == ["Маршрут до выбранной гостиницы пока не рассчитан"]
 
 
 @pytest.mark.req("UI-006")

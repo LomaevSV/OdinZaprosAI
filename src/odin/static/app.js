@@ -168,6 +168,32 @@ function card(title, subtitle, price, source, mode, extra = []) {
   );
 }
 
+// TRF-SELECT-01: маршруты «Как добраться» — трансферы, вошедшие в план (пару «выбранная точка ↔ выбранная
+// гостиница» собирает сервер). Порядок: к гостинице, затем обратно. Это справка, а не бронируемое предложение.
+const ROUTE_ORDER = { transfer_in: 0, transfer_out: 1 };
+
+function planRoutes(trip) {
+  const ids = new Set(((trip.plan && trip.plan.components) || []).filter((c) => c.kind === "transfer").map((c) => c.offer_id));
+  const rank = (offer) => (offer.direction in ROUTE_ORDER ? ROUTE_ORDER[offer.direction] : 2);
+  return (trip.transfer_options || []).filter((offer) => ids.has(offer.offer_id)).sort((a, b) => rank(a) - rank(b));
+}
+
+function routeTitle(title) {
+  return String(title).replace(/^Трансфер на автомобиле:\s*/, "Маршрут на автомобиле: ");
+}
+
+function routeCard(offer) {
+  const direction = { transfer_in: "К гостинице", transfer_out: "От гостиницы" }[offer.direction] || "Маршрут";
+  const km = offer.terms && offer.terms.distance_km != null ? `, ≈ ${offer.terms.distance_km} км` : "";
+  const time = offer.duration_minutes != null ? `≈ ${offer.duration_minutes} мин${km} (оценка без пробок)` : "время не оценено";
+  const cost = offer.price && offer.price.amount != null ? money(offer.price) : "неизвестна";
+  return el("div", { class: "card route", "data-testid": "route-card", "data-route-id": offer.offer_id, "data-direction": offer.direction },
+    el("div", {}, el("strong", {}, routeTitle(offer.title)), " ", modeBadge(offer.source.data_mode)),
+    el("div", {}, `${direction}: ${time}`),
+    el("div", {}, `Стоимость: ${cost}; не бронируется`),
+    el("div", { class: "meta" }, `Источник: ${offer.source.provider}${offer.source.tool ? " / " + offer.source.tool : ""}; актуально на ${asOf(offer.source)}`));
+}
+
 const DATES_PERIOD_PENDING_ID = "amb-llm-dates-period";
 
 function dayText(iso) {
@@ -294,15 +320,15 @@ function renderTrip(trip) {
     cards.append(grid);
   }
   // CART-UI-003: трансферы — отдельная секция, а не продолжение колонки «Транспорт обратно».
-  const transfers = trip.transfer_options || [];
-  if (transfers.length) {
+  // TRF-SELECT-01: «Как добраться» — только маршруты текущего плана (выбранная гостиница), справочно.
+  const routes = planRoutes(trip);
+  const planHasHotel = Boolean(plan && plan.components.some((component) => component.role === "hotel"));
+  if (routes.length || planHasHotel) {
     const section = el("section", { class: "offer-section transfers", "data-testid": "transfer-section", "aria-labelledby": "transfer-title" },
-      sectionTitle("transfer-title", "Трансферы", transfers.length),
-      el("p", { class: "meta" }, "Оценка, не подтверждено поставщиком; в демо-покупку не входит."));
-    for (const offer of transfers) {
-      const direction = { transfer_in: "Туда: к гостинице. ", transfer_out: "Обратно: от гостиницы. " }[offer.direction] || "";
-      section.append(card(offer.title, `${direction}Время: ~${offer.duration_minutes} мин (оценка)`, offer.price, offer.source, offer.source.data_mode, offer.limitations));
-    }
+      sectionTitle("transfer-title", "Как добраться", routes.length || null),
+      el("p", { class: "meta" }, "Справочные автомобильные маршруты, а не услуги бронирования: время в пути — оценка без пробок, стоимость и наличие не оцениваются, в демо-покупку не входят. Маршруты относятся к выбранной гостинице и обновляются при её смене."));
+    if (!routes.length) section.append(el("p", { class: "meta empty", "data-testid": "route-empty" }, "Маршрут до выбранной гостиницы пока не рассчитан"));
+    for (const offer of routes) section.append(routeCard(offer));
     cards.append(section);
   }
   const candidates = trip.candidate_destinations || [];
@@ -616,16 +642,19 @@ async function chooseDates(question, option) {
 // CART-UI-002/003: корзина в логике путешествия; трансферы — отдельные секции «туда» и «обратно».
 const CART_SECTIONS = [
   ["outbound", "Транспорт туда", ""],
-  ["transfer_in", "Трансфер туда: к гостинице", "transfer"],
+  ["transfer_in", "Как добраться: к гостинице (справочно)", "transfer"],
   ["hotel", "Проживание", ""],
-  ["transfer_out", "Трансфер обратно: от гостиницы", "transfer"],
+  ["transfer_out", "Как добраться: от гостиницы (справочно)", "transfer"],
   ["return", "Транспорт обратно", ""],
 ];
 
 function cartItemNode(item) {
+  const route = item.informational && item.kind === "transfer";
   return el("div", { class: "card", "data-testid": "cart-item", "data-role": item.role },
-    el("div", {}, el("strong", {}, item.title), " ", modeBadge(item.data_mode)),
-    el("div", {}, `Цена: ${money(item.price)}${item.informational ? " — информационная позиция" : ""}`),
+    el("div", {}, el("strong", {}, route ? routeTitle(item.title) : item.title), " ", modeBadge(item.data_mode)),
+    el("div", {}, route
+      ? `Стоимость: ${item.price.amount == null ? "неизвестна" : money(item.price)} — справочный маршрут, не бронируется`
+      : `Цена: ${money(item.price)}${item.informational ? " — информационная позиция" : ""}`),
     el("div", { class: "meta" }, item.note || `Источник: ${item.source.provider}`));
 }
 
