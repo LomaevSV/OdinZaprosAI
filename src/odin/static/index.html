@@ -23,9 +23,9 @@
       <div id="messages" class="messages" data-testid="messages" role="log" aria-live="polite" aria-label="Сообщения диалога"></div>
       <form id="text-form" class="text-form" data-testid="text-form">
         <label for="text-input" id="text-label">Свободный текст (без LLM будет честный отказ)</label>
-        <textarea id="text-input" rows="2" maxlength="4000"
+        <textarea id="text-input" rows="6" maxlength="4000"
           placeholder="Например: из Москвы в Казань 20–22 ноября вдвоём, не самолётом, до 60 000 ₽"></textarea>
-        <button type="submit">Отправить текст</button>
+        <button type="submit" id="text-send">Отправить текст</button>
         <button type="button" id="manual-btn" class="secondary" data-testid="manual-mode" hidden
           title="Открыть форму ручного ввода: запрос обрабатывается без LLM">Без LLM</button>
       </form>
@@ -74,6 +74,7 @@
         <button type="button" id="destination-cancel" class="secondary">Отмена</button>
         <p id="destination-hint" class="meta"></p>
       </form>
+      <div id="destinations" data-testid="destinations"></div>
       <h3>Варианты</h3>
       <div id="cards" class="cards" data-testid="cards"></div>
       <div id="selection-bar" class="selection-bar" data-testid="selection-bar" hidden></div>

@@ -32,6 +32,12 @@ class Node {
       this.children.push(child);
     }
   }
+  prepend(...items) {
+    const rest = this.children;
+    this.children = [];
+    this.append(...items);
+    this.children.push(...rest);
+  }
   replaceChildren(...items) { this.children = []; this.append(...items); }
   get textContent() { return this.children.map((c) => c.textContent).join(""); }
   set textContent(value) { this.replaceChildren(new TextNode(value == null ? "" : String(value))); }
@@ -68,11 +74,15 @@ class Element extends Node {
     const event = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
     return Promise.all((this.listeners[type] || []).map((handler) => handler(event)));
   }
-  scrollIntoView() { this.scrolled += 1; }
+  scrollIntoView(options) { this.scrolled += 1; viewLog.push({ kind: "scrollIntoView", target: this.id || this.getAttribute("data-testid") || this.tagName, options }); }
+  // UI-012: фокус и положение на экране — чтобы проверить, что выбор не уводит страницу.
+  focus(options) { document.activeElement = this; viewLog.push({ kind: "focus", target: this.id || this.getAttribute("data-testid") || this.tagName, preventScroll: Boolean(options && options.preventScroll) }); }
+  getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; }
   showModal() { this.open = true; }
   walk(visit) { visit(this); for (const child of this.children) if (child instanceof Element) child.walk(visit); }
 }
 
+const viewLog = [];
 const html = fs.readFileSync(path.join(ROOT, "src/odin/static/index.html"), "utf8");
 const byId = {};
 for (const match of html.matchAll(/<(\w+)[^>]*\sid="([^"]+)"/g)) byId[match[2]] = new Element(match[1], match[2]);
@@ -99,6 +109,7 @@ for (const match of tripFormHtml.matchAll(/<(input|select)\b([^>]*)>/g)) {
 byId["trip-form"].elements = { namedItem: (name) => formFields[name] || null };
 
 const document = {
+  activeElement: null,
   getElementById: (id) => byId[id] || null,
   createElement: (tag) => new Element(tag),
   createTextNode: (value) => new TextNode(value),
@@ -118,13 +129,21 @@ class FormData {
 }
 
 const requests = [];
+// UI-011: однократный сбой связи для заданного текста — как «нет сети» в браузере (fetch отклоняется).
+let netFailText = process.env.HARNESS_NET_FAIL_TEXT || null;
 async function fetchProxy(url, options = {}) {
-  requests.push({ method: options.method || "GET", path: String(url).replace(/\?.*/, ""), body: options.body ? JSON.parse(options.body) : null });
+  const body = options.body ? JSON.parse(options.body) : null;
+  if (netFailText && body && body.text === netFailText) {
+    netFailText = null;
+    throw new TypeError("Failed to fetch");
+  }
+  requests.push({ method: options.method || "GET", path: String(url).replace(/\?.*/, ""), body });
   return fetch(BASE + url, options);
 }
 
 const sandbox = {
   document, FormData, Node, console, crypto: globalThis.crypto, fetch: fetchProxy,
+  window: { scrollBy: (x, y) => viewLog.push({ kind: "scrollBy", y }) },
   // UI-010: диагностический адрес ручного режима («?manual=1») — только если задан стендом.
   location: { search: process.env.HARNESS_SEARCH || "" },
   setInterval: () => 0, Date, Number, Object, JSON, Set, Map, Array, String, Boolean, Error, Promise,
@@ -155,9 +174,18 @@ function findAll(root, predicate) {
   return found;
 }
 const byTestid = (root, prefix) => findAll(root, (n) => n.getAttribute && (n.getAttribute("data-testid") || "").startsWith(prefix));
-const destinationCards = () => byTestid(byId.cards, "destination-card");
+const destinationCards = () => byTestid(byId.destinations, "destination-card");
+// UI-012: что сдвигало страницу за время действия (scrollIntoView, фокус без preventScroll, scrollBy).
+const viewSince = (mark) => viewLog.slice(mark);
+const jumps = (mark) => viewSince(mark).filter((e) => e.kind === "scrollIntoView" || (e.kind === "focus" && !e.preventScroll) || (e.kind === "scrollBy" && e.y));
+// UI-013: место блока «Предложенные направления» в панели поездки.
+const destinationPlacement = () => ({
+  in_destinations: byTestid(byId.destinations, "destination-section").length,
+  in_cards: byTestid(byId.cards, "destination-section").length,
+  offer_columns: byTestid(byId.cards, "offer-columns").length,
+});
 // Язык интерфейса: все тексты, которые видит пользователь (включая подсказки title/aria-label).
-const VISIBLE_IDS = ["messages", "questions", "trip-summary", "destination-form", "cards", "selection-bar", "cart-hint", "constraints", "cart", "receipt", "mode-badge", "llm-badge", "data-notice", "llm-notice", "manual-offer", "text-label", "cart-btn", "revision", "progress"];
+const VISIBLE_IDS = ["messages", "questions", "trip-summary", "destination-form", "destinations", "cards", "selection-bar", "cart-hint", "constraints", "cart", "receipt", "mode-badge", "llm-badge", "data-notice", "llm-notice", "manual-offer", "text-label", "cart-btn", "revision", "progress"];
 function visibleText() {
   const parts = [];
   for (const id of VISIBLE_IDS) {
@@ -271,6 +299,50 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     return;
   }
 
+  if (process.env.HARNESS_MODE === "send") {
+    // UI-011: поле очищается сразу после начала отправки; двойной отправки нет; при сбое текст не теряется.
+    const posts = () => count("POST", "/messages");
+    const userTexts = () => byTestid(byId.messages, "msg-user").map((m) => m.textContent);
+    const input = byId["text-input"];
+    const first = process.env.HARNESS_TEXT;
+    const failing = process.env.HARNESS_NET_FAIL_TEXT;
+
+    input.value = "   ";
+    await byId["text-form"].dispatch("submit");
+    out.empty = { posts: posts(), messages: messages().length, value: input.value };
+
+    const sent = posts();
+    const mark = viewLog.length;
+    input.value = first;
+    const pending = byId["text-form"].dispatch("submit");
+    out.immediately = { value: input.value, user_texts: userTexts(), send_disabled: byId["text-send"].disabled, aria_busy: byId["text-form"].getAttribute("aria-busy") };
+    await byId["text-form"].dispatch("submit");  // повторное нажатие с пустым полем
+    input.value = "второе сообщение";
+    await byId["text-form"].dispatch("submit");  // новое сообщение, пока идёт ход
+    out.while_busy = { value: input.value, user_texts: userTexts(), last: messages().slice(-1)[0] };
+    await pending;
+    await until(() => posts() > sent && byId.progress.hidden && !byId["text-send"].disabled, "first turn");
+    await sleep(50);
+    out.after_first = { posts: posts() - sent, value: input.value, user_texts: userTexts(), send_disabled: byId["text-send"].disabled };
+    out.text_follow = viewSince(mark).some((e) => e.kind === "scrollIntoView");
+
+    input.value = failing;
+    const beforeFail = posts();
+    await byId["text-form"].dispatch("submit");
+    out.fail_immediately = input.value;
+    await until(() => byTestid(byId.messages, "retry-button").length > 0 && !byId["text-send"].disabled, "network failure");
+    out.after_fail = { value: input.value, posts: posts() - beforeFail, last: messages().slice(-1)[0], user_texts: userTexts() };
+    const retry = byTestid(byId.messages, "retry-button").slice(-1)[0];
+    await retry.dispatch("click");
+    await until(() => posts() > beforeFail && byId.progress.hidden && !byId["text-send"].disabled, "retry turn");
+    await sleep(50);
+    out.after_retry = { value: input.value, posts: posts() - beforeFail, user_texts: userTexts(), retry_disabled: retry.disabled };
+    out.text_bodies = requests.filter((r) => r.method === "POST" && r.path.endsWith("/messages")).map((r) => r.body.text);
+    out.visible_text = visibleText();
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
   if (process.env.HARNESS_MODE === "dates") {
     // DATE-003: варианты дат — кнопки; выбор без LLM сохраняет прочие условия, двойной клик — один запрос.
     // UI-008: варианты дат — внутри сообщения ассистента в ленте; варианты прошлых ходов не кликаются.
@@ -310,9 +382,12 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     out.destination_cards = cards.map((c) => ({ id: c.getAttribute("data-candidate-id"), role: c.getAttribute("role"), tabindex: c.getAttribute("tabindex"), selectable: c.classList.contains("selectable"), text: c.textContent }));
     const first = cards[0];
     const posts = count("POST", "/messages");
+    const clickMark = viewLog.length;
     await first.dispatch("click");
     await until(() => count("POST", "/messages") > posts && state_request() && state_request().destination, "destination chosen");
-    await until(() => byId.progress.hidden, "turn done");
+    await until(() => byId.progress.hidden && !vm.runInContext("state.busy", sandbox), "turn done");
+    out.click_jumps = jumps(clickMark);
+    out.placement_after_click = destinationPlacement();
     const chosenPost = requests.filter((r) => r.method === "POST" && r.path.endsWith("/messages")).slice(-1)[0];
     out.choice_body = chosenPost.body;
     out.after_click = { origin: state_request().origin && state_request().origin.name, destination: state_request().destination.name, adults: state_request().party.adults, dates: state_request().date_range };
@@ -327,7 +402,10 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
       const name = other.textContent;
       await other.dispatch("keydown", { key: "Enter" });
       await until(() => count("POST", "/messages") > before && byId.progress.hidden && state_request().destination.name !== out.after_click.destination, "second destination");
+      await until(() => !vm.runInContext("state.busy", sandbox), "second turn done");
       out.after_keyboard = { origin: state_request().origin && state_request().origin.name, destination: state_request().destination.name, card_text: name };
+      out.placement_after_keyboard = destinationPlacement();
+      out.selected_after_keyboard = destinationCards().filter((c) => c.classList.contains("selected")).map((c) => c.getAttribute("data-candidate-name"));
     }
     out.visible_text = visibleText();
     process.stdout.write(JSON.stringify(out) + "\n");
@@ -352,7 +430,7 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     const settle = async (sent, name) => {
       await until(() => posts() > sent && byId.progress.hidden && destination() === name, `destination ${name}`);
       await sleep(30);
-      return { destination: destination(), panel_cards: destinationCards().length, chat_buttons: cityButtons().length, chat_selected: cityButtons().filter((b) => b.classList.contains("selected")).map((b) => b.textContent) };
+      return { destination: destination(), panel_cards: destinationCards().length, chat_buttons: cityButtons().length, chat_selected: cityButtons().filter((b) => b.classList.contains("selected")).map((b) => b.textContent), placement: destinationPlacement(), panel_selected: destinationCards().filter((c) => c.classList.contains("selected")).map((c) => c.getAttribute("data-candidate-name")) };
     };
     const viaChat = async (name) => {
       const sent = posts();
@@ -361,14 +439,18 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     };
     const viaPanel = async (name) => {
       const sent = posts();
+      const mark = viewLog.length;
       await destinationCards().find((c) => c.getAttribute("data-candidate-name") === name).dispatch("click");
-      return settle(sent, name);
+      const step = await settle(sent, name);
+      step.jumps = jumps(mark);
+      return step;
     };
     await sayText(process.env.HARNESS_TEXT);
     out.placeholder_after_first = byId["text-input"].placeholder;
     await until(() => destinationCards().length > 1 && cityButtons().length > 1, "destination options");
     const names = destinationCards().map((c) => c.getAttribute("data-candidate-name"));
     out.names = names;
+    out.placement_initial = destinationPlacement();
     out.city_group_label = findAll(byId.messages, (n) => n.getAttribute && n.getAttribute("aria-label") === "Предложенные направления").length;
     if (process.env.HARNESS_TEXT_DATES) {
       await sayText(process.env.HARNESS_TEXT_DATES);
@@ -384,6 +466,8 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     if (process.env.HARNESS_TEXT_CHANGE) {
       await sayText(process.env.HARNESS_TEXT_CHANGE);
       out.after_text = destination();
+      out.placement_after_text = destinationPlacement();
+      out.panel_after_text = destinationCards().map((c) => c.getAttribute("data-candidate-name"));
     }
     // «Изменить направление» рядом с текущим городом: форма без LLM, город вводится вручную.
     const change = byTestid(byId["trip-summary"], "change-destination")[0];
@@ -443,25 +527,41 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
   const altHotel = selectableCards().find((c) => c.getAttribute("data-role") === "hotel" && !c.classList.contains("selected"));
   out.alt_hotel = altHotel.getAttribute("data-offer-id");
   const totalBefore = byId["trip-summary"].textContent;
+  const hotelMark = viewLog.length;
   await altHotel.dispatch("click");
   await until(() => count("POST", "/selections") >= 1 && selected("hotel")[0] === out.alt_hotel, "hotel selected");
+  await until(() => !vm.runInContext("state.busy", sandbox), "hotel turn done");
   out.after_hotel = { hotel: selected("hotel"), outbound: selected("outbound"), return: selected("return") };
   out.summary_changed = byId["trip-summary"].textContent !== totalBefore;
   out.selection_message = messages().slice(-1)[0];
+  out.hotel_jumps = jumps(hotelMark);
+  out.selection_status = byTestid(byId["selection-bar"], "selection-status").map((n) => n.textContent);
+  out.selection_status_role = byTestid(byId["selection-bar"], "selection-status").map((n) => n.getAttribute("role"));
 
   // UI-001: выбор другого транспорта туда — гостиница не меняется.
   const altOut = selectableCards().find((c) => c.getAttribute("data-role") === "outbound" && !c.classList.contains("selected"));
   out.alt_outbound = altOut ? altOut.getAttribute("data-offer-id") : null;
   if (altOut) {
+    // UI-012: клавиатура — карточка в фокусе; после перерисовки фокус на новой копии без прокрутки.
+    altOut.focus();
+    const keyMark = viewLog.length;
     await altOut.dispatch("keydown", { key: "Enter" });
     await until(() => count("POST", "/selections") >= 2 && selected("outbound")[0] === out.alt_outbound, "outbound selected");
+    await until(() => !vm.runInContext("state.busy", sandbox), "outbound turn done");
+    out.keyboard_jumps = jumps(keyMark);
+    out.keyboard_focus = viewSince(keyMark).filter((e) => e.kind === "focus");
+    const active = sandbox.document.activeElement;
+    out.focus_after_keyboard = active && active.getAttribute ? active.getAttribute("data-offer-id") : null;
+    out.focus_is_new_card = active !== altOut && selectableCards().includes(active);
   }
   out.after_outbound = { hotel: selected("hotel"), outbound: selected("outbound"), return: selected("return") };
 
   // Повторный клик по уже выбранному — без запроса.
   const sameBefore = count("POST", "/selections");
+  const sameMark = viewLog.length;
   await selectableCards().find((c) => c.getAttribute("data-offer-id") === out.alt_hotel).dispatch("click");
   out.reselect_requests = count("POST", "/selections") - sameBefore;
+  out.reselect_jumps = jumps(sameMark);
 
   // CART-UI-001: корзина по актуальному выбору.
   await byId["cart-btn"].dispatch("click");
@@ -479,8 +579,10 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
   // Выбор после корзины делает её недействительной в интерфейсе.
   const another = selectableCards().find((c) => c.getAttribute("data-role") === "hotel" && !c.classList.contains("selected"));
   if (another) {
+    const anotherMark = viewLog.length;
     await another.dispatch("click");
     await until(() => byId.cart.hidden, "cart reset after selection");
+    out.after_cart_jumps = jumps(anotherMark);
   }
   out.cart_hidden_after_reselect = byId.cart.hidden;
   out.requests = requests.filter((r) => r.method === "POST").map((r) => r.path.replace(/\/(s|t|cart)-[0-9a-f]+/g, "/$1-*"));

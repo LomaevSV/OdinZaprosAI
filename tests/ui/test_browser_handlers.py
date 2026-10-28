@@ -128,6 +128,23 @@ def test_reselecting_same_offer_sends_no_request(observed: dict[str, Any]) -> No
     assert observed["reselect_requests"] == 0
 
 
+@pytest.mark.req("UI-012")
+def test_offer_selection_keeps_page_position(observed: dict[str, Any]) -> None:
+    """Выбор гостиницы/транспорта не прокручивает к чату и не ставит фокус с прокруткой (стенд без layout)."""
+    assert observed["hotel_jumps"] == [], "выбор гостиницы не уводит страницу к чату"
+    assert observed["reselect_jumps"] == [] and observed["after_cart_jumps"] == []
+    status = observed["selection_status"]
+    assert status and status[0].startswith("✓ Выбрано (гостиница):"), "подтверждение рядом с карточками"
+    assert observed["selection_status_role"] == ["status"], "подтверждение озвучивается"
+    assert "Итог пересчитан" in observed["selection_message"], "сообщение в ленте сохраняется (без прокрутки)"
+    if observed["alt_outbound"] is None:
+        pytest.skip("в ДЕМО-выдаче нет альтернативного транспорта туда")
+    assert observed["keyboard_jumps"] == [], "выбор клавиатурой не прокручивает страницу"
+    assert observed["keyboard_focus"] and all(event["preventScroll"] for event in observed["keyboard_focus"])
+    assert observed["focus_after_keyboard"] == observed["alt_outbound"], "фокус на выбранной карточке"
+    assert observed["focus_is_new_card"] is True, "фокус — на карточке после перерисовки"
+
+
 def test_cart_is_built_from_current_selection_and_shown(observed: dict[str, Any]) -> None:
     assert observed["cart_posts"] == 1
     assert "Корзина" in observed["cart_text"]
@@ -439,3 +456,93 @@ def test_manual_mode_is_hidden_in_public_interface_with_llm(tmp_path: Path) -> N
     assert "Форма" not in notice and "без LLM" in notice
     text = " ".join(result["visible_text"])
     assert "Без LLM" not in text and "Заполнить форму" not in text and "заполните форму" not in text
+
+
+# ---------------------------------------------------------------- этап 61: UI-011, UI-012, UI-013, UI-014
+
+SEND_TEXT = "Хочу из Москвы в Казань вдвоём"
+SEND_FAIL_TEXT = "А сколько это будет стоить?"
+
+
+@pytest.mark.req("UI-011")
+def test_sent_text_leaves_input_at_once_and_survives_failure(tmp_path: Path) -> None:
+    fake = ScriptedLlm(
+        {
+            SEND_TEXT: {
+                "origin": {"value": "Москва", "span": "из Москвы"},
+                "destination": {"value": "Казань", "span": "в Казань"},
+                "adults": {"value": 2, "span": "вдвоём"},
+            }
+        }
+    )
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(base, "send", HARNESS_TEXT=SEND_TEXT, HARNESS_NET_FAIL_TEXT=SEND_FAIL_TEXT)
+    empty = result["empty"]
+    assert empty["posts"] == 0 and empty["value"] == "   ", "пустой ввод не отправляется и поле не трогается"
+    now = result["immediately"]
+    assert now["value"] == "", "поле очищено сразу, до ответа LLM"
+    assert now["user_texts"] == [SEND_TEXT], "текст сразу в ленте"
+    assert now["send_disabled"] is True and now["aria_busy"] == "true", "повторная отправка недоступна"
+    busy = result["while_busy"]
+    assert busy["user_texts"] == [SEND_TEXT], "повторное нажатие не дублирует сообщение"
+    assert busy["value"] == "второе сообщение", "неотправленный текст не стирается"
+    assert "предыдущий запрос ещё обрабатывается" in busy["last"]
+    first = result["after_first"]
+    assert first["posts"] == 1 and first["user_texts"] == [SEND_TEXT] and first["send_disabled"] is False
+    assert first["value"] == "второе сообщение", "черновик, набранный во время хода, сохранён"
+    assert result["text_follow"] is True, "после текстового сообщения лента показывает ответ"
+    assert result["fail_immediately"] == ""
+    failed = result["after_fail"]
+    assert failed["value"] == SEND_FAIL_TEXT, "при сбое связи текст вернулся в поле ввода"
+    assert failed["posts"] == 0 and "нет связи с сервером" in failed["last"]
+    retried = result["after_retry"]
+    assert retried["posts"] == 1 and retried["value"] == "", "повтор отправил текст и очистил поле"
+    assert retried["user_texts"].count(SEND_FAIL_TEXT) == 1, "текст в ленте — один раз"
+    assert result["text_bodies"] == [SEND_TEXT, SEND_FAIL_TEXT]
+
+
+@pytest.mark.req("UI-012", "UI-013", "CITY-002")
+def test_suggested_destinations_keep_their_place(city_dialog: tuple[dict[str, Any], ScriptedLlm]) -> None:
+    result, _fake = city_dialog
+    placed = {"in_destinations": 1, "in_cards": 0}
+    assert {k: result["placement_initial"][k] for k in placed} == placed, "блок — на своём месте"
+    names = result["names"]
+    for step in result["steps"]:
+        assert {k: step["placement"][k] for k in placed} == placed, "блок не переносится в конец"
+        assert step["panel_selected"] == [step["destination"]], "выбор виден в блоке и его можно сменить"
+    assert result["steps"][1]["jumps"] == [], "выбор направления в панели не уводит страницу к чату"
+    assert {k: result["placement_after_text"][k] for k in placed} == placed
+    assert result["panel_after_text"] == names, "после смены направления текстом набор доступен на месте"
+
+
+@pytest.mark.req("UI-012", "UI-013", "CITY-001")
+def test_suggested_destinations_stay_above_offers_after_choice(server: str) -> None:
+    result = _run(server, "inspiration")
+    for key in ("placement_after_click", "placement_after_keyboard"):
+        placement = result[key]
+        assert placement["offer_columns"] == 1, "после выбора города появились варианты"
+        assert (placement["in_destinations"], placement["in_cards"]) == (1, 0), (
+            "«Предложенные направления» не переносятся в конец, под варианты"
+        )
+    assert result["click_jumps"] == [], "выбор направления в панели не прокручивает страницу"
+    assert result["selected_after_keyboard"] == [result["after_keyboard"]["destination"]]
+
+
+@pytest.mark.req("UI-014", "UI-008", "UI-009")
+def test_text_input_shows_five_to_six_lines() -> None:
+    static = Path(__file__).resolve().parents[2] / "src/odin/static"
+    html = (static / "index.html").read_text(encoding="utf-8")
+    textarea = re.search(r"<textarea[^>]*id=\"text-input\"[^>]*>", html)
+    assert textarea is not None
+    rows = re.search(r"rows=\"(\d+)\"", textarea.group(0))
+    assert rows is not None and 5 <= int(rows.group(1)) <= 6
+    assert "Например: из Москвы" in textarea.group(0), "пример запроса до начала диалога (UI-009)"
+    css = (static / "app.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.text-form textarea\s*\{([^}]*)\}", css)
+    assert rule is not None
+    height = re.search(r"(?<![-\w])height:\s*calc\((\d+) \* 1\.45em", rule.group(1))
+    min_height = re.search(r"min-height:\s*calc\((\d+) \* 1\.45em", rule.group(1))
+    assert height is not None and 5 <= int(height.group(1)) <= 6, "высота — 5–6 строк без растягивания"
+    assert min_height is not None and int(min_height.group(1)) >= 5
+    assert "line-height: 1.45" in rule.group(1)
+    assert "overflow-y: auto" in rule.group(1), "длинный текст прокручивается только внутри поля"

@@ -46,11 +46,13 @@ async function call(method, path, body) {
 
 // UI-008: единая лента диалога, как в обычном чате: каждое сообщение — один раз, по порядку; варианты выбора
 // (города, даты) — внутри сообщения, к которому относятся. Своей прокрутки у ленты нет: прокручивается страница.
-function say(role, message) {
+// UI-012: к новому сообщению лента подводится только для действий из чата (текст, кнопки в сообщениях);
+// выбор в панели поездки (предложения, направления, корзина) не уводит страницу к чату.
+function say(role, message, follow = false) {
   const node = el("div", { class: `msg ${role}`, "data-testid": `msg-${role}` }, message);
   $("messages").append(node);
   if (role === "user") markDialogStarted();
-  if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+  if (follow && node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
   return node;
 }
 
@@ -61,13 +63,13 @@ function markDialogStarted() {
   $("text-input").placeholder = PLACEHOLDER_SHORT;
 }
 
-function busyNotice() {
-  say("assistant", "Подождите: предыдущий запрос ещё обрабатывается, затем повторите действие.");
+function busyNotice(follow = false) {
+  say("assistant", "Подождите: предыдущий запрос ещё обрабатывается, затем повторите действие.", follow);
 }
 
 // Конфликт ревизии (409) не «молчит»: понятное сообщение, обновлённая поездка и кнопка «Повторить».
-function sayRetry(message, retry) {
-  const node = say("assistant", message);
+function sayRetry(message, retry, follow = false) {
+  const node = say("assistant", message, follow);
   if (!retry) return node;
   const button = el("button", { type: "button", class: "option retry", "data-testid": "retry-button" }, "Повторить");
   button.addEventListener("click", () => {
@@ -210,10 +212,11 @@ $("destination-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const name = $("destination-input").value.trim();
   if (!name) {
+    $("destination-hint").textContent = "Укажите город назначения.";
     say("assistant", "Укажите город назначения.");
     return;
   }
-  chooseDestination({ place: { name } }).then((turn) => {
+  chooseDestination({ place: { name } }, { anchor: () => $("destinations") }).then((turn) => {
     if (turn) {
       $("destination-input").value = "";
       closeDestinationChange();
@@ -259,6 +262,8 @@ function renderTrip(trip) {
 
   const cards = $("cards");
   cards.replaceChildren();
+  offerNodes.clear();
+  destinationNodes.clear();
   const hotels = Object.fromEntries((trip.hotels || []).map((hotel) => [hotel.hotel_id, hotel]));
   const chosen = new Set((plan ? plan.components : []).map((component) => component.offer_id));
   // UI-002: три колонки «туда | гостиница | обратно»; пустая колонка — честное пустое состояние.
@@ -301,6 +306,11 @@ function renderTrip(trip) {
     cards.append(section);
   }
   const candidates = trip.candidate_destinations || [];
+  // UI-013: «Предложенные направления» — в своём постоянном месте панели (над вариантами), а не в конце
+  // списка предложений: после выбора города и появления вариантов блок не перескакивает, содержимое
+  // обновляется на месте и остаётся доступным для смены выбора.
+  const destinations = $("destinations") || cards;
+  if (destinations !== cards) destinations.replaceChildren();
   if (candidates.length) {
     // CITY-001: предложенные направления выбираются нажатием или клавиатурой; выбирается только «куда».
     const chosenName = trip.request && trip.request.destination ? trip.request.destination.name : null;
@@ -313,9 +323,10 @@ function renderTrip(trip) {
         el("div", {}, candidate.description),
         el("div", { class: "meta" }, `${candidate.cost_note}; климат: ${{ not_loaded: "нормы не загружены", norm: "климатическая норма", unknown: "неизвестно" }[candidate.climate_status] || candidate.climate_status}; визы: не проверено`));
       makeDestinationSelectable(node, candidate, candidate.place.name === chosenName);
+      destinationNodes.set(candidate.place.name, node);
       section.append(node);
     }
-    cards.append(section);
+    destinations.append(section);
   }
 
   const constraints = $("constraints");
@@ -379,10 +390,33 @@ function updateCartButton(trip) {
 
 // UI-001: выбор альтернативы. Выбираемые роли — транспорт туда/обратно и гостиница.
 const SELECTABLE_ROLES = new Set(["outbound", "return", "hotel"]);
+// UI-012: карточки текущей отрисовки — чтобы после перерисовки найти выбранную и оставить её на месте.
+const offerNodes = new Map();
+const destinationNodes = new Map();
+
+// UI-012: выбор в панели не двигает страницу. Положение карточки запоминается при нажатии; после
+// изменений (сообщение в ленте выше, перерисовка панели) компенсируется только её сдвиг, без прокрутки
+// к чату, к началу или концу. Фокус клавиатуры переходит на новую копию карточки без прокрутки.
+function pinView(find) {
+  const topOf = (node) => (node && node.getBoundingClientRect ? node.getBoundingClientRect().top : null);
+  const start = find();
+  const origin = topOf(start);
+  const focused = Boolean(start) && document.activeElement === start;
+  return function restore() {
+    const node = find();
+    if (!node) return;
+    const now = topOf(node);
+    if (origin != null && now != null && now !== origin && typeof window !== "undefined" && window.scrollBy) {
+      window.scrollBy(0, now - origin);
+    }
+    if (focused && document.activeElement !== node && node.focus) node.focus({ preventScroll: true });
+  };
+}
 
 function makeSelectable(node, role, offerId, title, selected) {
   if (selected) node.classList.add("selected");
   if (!SELECTABLE_ROLES.has(role)) return;
+  offerNodes.set(offerId, node);
   node.classList.add("selectable");
   node.setAttribute("data-offer-id", offerId);
   node.setAttribute("data-role", role);
@@ -408,11 +442,12 @@ function makeDestinationSelectable(node, candidate, selected) {
   node.setAttribute("tabindex", "0");
   node.setAttribute("aria-pressed", selected ? "true" : "false");
   node.title = selected ? "Выбрано направлением" : "Нажмите, чтобы выбрать это направление";
-  node.addEventListener("click", () => chooseDestination(candidate));
+  const choose = () => chooseDestination(candidate, { anchor: () => destinationNodes.get(candidate.place.name) || $("destinations") });
+  node.addEventListener("click", choose);
   node.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      chooseDestination(candidate);
+      choose();
     }
   });
 }
@@ -420,26 +455,32 @@ function makeDestinationSelectable(node, candidate, selected) {
 // CITY-001/002: выбор направления — ход с одним полем «куда»; сервер дополняет им известные условия поездки
 // (город отправления, даты, состав, незакрытые уточнения не теряются). Ход без LLM: платных вызовов нет.
 // Направление меняется на любом этапе: A → B → A, после уточнений, плана и корзины (корзина — недействительна).
-async function chooseDestination(candidate) {
+// UI-012/013: из чата (follow) лента показывает ответ; из панели (anchor) страница остаётся на месте.
+async function chooseDestination(candidate, view = {}) {
   if (!state.trip) return null;
+  const restore = view.anchor ? pinView(view.anchor) : () => {};
   if (state.busy) {
-    busyNotice();
+    busyNotice(view.follow);
+    restore();
     return null;
   }
   const name = candidate.place.name;
   const current = state.trip.request && state.trip.request.destination;
   if (current && current.name === name) {
-    say("assistant", `Направление «${name}» уже выбрано.`);
+    say("assistant", `Направление «${name}» уже выбрано.`, view.follow);
+    restore();
     return null;
   }
   state.busy = true;
   try {
-    say("user", `Выбираю направление (куда): ${name}`);
-    const turn = await sendMessage({ form: { destination: name } }, () => chooseDestination(candidate));
+    say("user", `Выбираю направление (куда): ${name}`, view.follow);
+    restore();
+    const turn = await sendMessage({ form: { destination: name } }, () => chooseDestination(candidate, view), view.follow);
     if (turn) resetCart();
     return turn;
   } finally {
     state.busy = false;
+    restore();
   }
 }
 
@@ -455,8 +496,10 @@ function currentSelections(trip) {
 
 async function selectOffer(role, offerId, title) {
   if (!state.trip || state.busy) return;
+  const restore = pinView(() => offerNodes.get(offerId));
   if (currentSelections(state.trip)[role] === offerId) {
     say("assistant", `Этот вариант (${ROLE_LABELS[role] || role}) уже выбран.`);
+    restore();
     return;
   }
   state.busy = true;
@@ -470,11 +513,15 @@ async function selectOffer(role, offerId, title) {
     resetCart();
     renderTrip(trip);
     const total = trip.plan ? `${money(trip.plan.total_price)} — стоимость ${COMPLETENESS[trip.plan.completeness]}` : "не рассчитан";
+    // UI-012: подтверждение видно рядом с карточками (отметка «выбрано» и строка в панели выбора), а не только в чате.
+    $("selection-bar").prepend(el("div", { class: "selection-status", role: "status", "data-testid": "selection-status" },
+      `✓ Выбрано (${ROLE_LABELS[role] || role}): ${title}. Итог пересчитан.`));
     say("assistant", `Выбрано (${ROLE_LABELS[role] || role}): ${title}. Итог пересчитан: ${total}. Прежняя корзина недействительна.`);
   } catch (error) {
     say("assistant", `Не удалось выбрать вариант: ${error.message}`);
   } finally {
     state.busy = false;
+    restore();
   }
 }
 
@@ -520,7 +567,7 @@ function attachDestinationOptions(node, candidates) {
   for (const candidate of candidates) {
     const button = el("button", { type: "button", class: "option", "data-testid": "city-option", "data-candidate-name": candidate.place.name }, candidate.place.name);
     button.title = "Выбрать это направление («куда»); выбор можно изменить";
-    button.addEventListener("click", () => chooseDestination(candidate));
+    button.addEventListener("click", () => chooseDestination(candidate, { follow: true }));
     cityButtons.push(button);
     group.append(button);
   }
@@ -544,21 +591,21 @@ function setOptionsDisabled(disabled) {
 async function chooseDates(question, option) {
   if (!state.trip) return;
   if (state.busy) {
-    busyNotice();
+    busyNotice(true);
     return;
   }
   const range = state.trip.request && state.trip.request.date_range;
   if (range && range.start === option.date_from && range.end === option.date_to) {
-    say("assistant", `Даты ${option.label} уже выбраны.`);
+    say("assistant", `Даты ${option.label} уже выбраны.`, true);
     return;
   }
   state.busy = true;
   setOptionsDisabled(true);
   const offered = optionButtons;
   try {
-    say("user", `Выбираю даты: ${option.label}`);
+    say("user", `Выбираю даты: ${option.label}`, true);
     const turn = await sendMessage({ choice: { ambiguity_id: question.ambiguity_id, option_id: option.option_id, date_from: option.date_from, date_to: option.date_to } },
-      () => chooseDates(question, option));
+      () => chooseDates(question, option), true);
     if (turn) resetCart();
   } finally {
     state.busy = false;
@@ -782,7 +829,7 @@ for (const type of ["input", "change"]) {
 
 // Ход диалога: ответ ассистента — одно сообщение ленты; вопросы уже входят в его текст, варианты выбора
 // (даты, предложенные города) прикрепляются к нему же. Отдельной панели «Вопрос» нет (UI-008).
-async function sendMessage(body, retry) {
+async function sendMessage(body, retry, follow = false) {
   await ensureSession();
   $("progress").hidden = false;
   try {
@@ -792,7 +839,7 @@ async function sendMessage(body, retry) {
       ...body,
     });
     retireOptions();
-    const node = say("assistant", turn.assistant_text);
+    const node = say("assistant", turn.assistant_text, follow);
     attachQuestionOptions(node, turn.questions);
     const candidates = turn.state.candidate_destinations || [];
     const request = turn.state.request;
@@ -809,9 +856,9 @@ async function sendMessage(body, retry) {
   } catch (error) {
     if (error.status === 409) {
       await refreshTrip();
-      sayRetry(`Действие не выполнено: ${error.message}. Состояние поездки обновлено — повторите действие.`, retry);
+      sayRetry(`Действие не выполнено: ${error.message}. Состояние поездки обновлено — повторите действие.`, retry, follow);
     } else {
-      sayRetry(`Ошибка: ${error.message}`, error.status ? null : retry);
+      sayRetry(`Ошибка: ${error.message}`, error.status ? null : retry, follow);
     }
     if (body.text) offerManualMode("Текст не обработан и сохранён в поле ввода. Можно продолжить без LLM.");
     return null;
@@ -822,23 +869,39 @@ async function sendMessage(body, retry) {
 
 $("trip-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  say("user", "Запрос из формы (без LLM)");
-  sendMessage({ form: formPayload(event.target) }).then((turn) => { if (turn) touchedFields.clear(); });
+  say("user", "Запрос из формы (без LLM)", true);
+  sendMessage({ form: formPayload(event.target) }, undefined, true).then((turn) => { if (turn) touchedFields.clear(); });
 });
+
+// UI-011: отправленный текст сразу уходит из поля в ленту (один раз), не дожидаясь ответа LLM. Пока ход
+// идёт, кнопка «Отправить» недоступна и повторная отправка не начинается. Если текст не обработан
+// (нет связи, ошибка сервера, LLM недоступен), он возвращается в поле — если пользователь не начал
+// писать новое сообщение; при сбое связи в ленте есть кнопка «Повторить».
+function setSending(sending) {
+  const button = $("text-send");
+  if (button) button.disabled = sending;
+  $("text-form").setAttribute("aria-busy", sending ? "true" : "false");
+}
 
 async function sendText(value) {
   if (state.busy) {
-    busyNotice();
+    busyNotice(true);
     return null;
   }
   state.busy = true;
+  setSending(true);
   try {
-    // UI-003: при недоступном LLM введённый текст не стирается; стирается только отправленный текст.
-    const turn = await sendMessage({ text: value }, () => sendText(value));
-    if (turn && turn.input_mode !== "llm_unavailable" && $("text-input").value.trim() === value) $("text-input").value = "";
+    const turn = await sendMessage({ text: value }, () => sendText(value), true);
+    const input = $("text-input");
+    if (turn && turn.input_mode !== "llm_unavailable") {
+      if (input.value.trim() === value) input.value = "";
+    } else if (!input.value.trim()) {
+      input.value = value;
+    }
     return turn;
   } finally {
     state.busy = false;
+    setSending(false);
   }
 }
 
@@ -847,10 +910,11 @@ $("text-form").addEventListener("submit", (event) => {
   const value = $("text-input").value.trim();
   if (!value) return;
   if (state.busy) {
-    busyNotice();
+    busyNotice(true);
     return;
   }
-  say("user", value);
+  $("text-input").value = "";
+  say("user", value, true);
   sendText(value);
 });
 
