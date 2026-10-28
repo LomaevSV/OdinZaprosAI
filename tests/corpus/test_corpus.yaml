@@ -1,0 +1,382 @@
+# Корпус K-01..K-30 (ТЗ 0.7 TEST-01, план §6.3). Версионируется вместе с кодом.
+#
+# Для каждого сценария и режима — либо доказательства (pytest node id), либо предустановленный
+# статус BLOCKED / NOT_RUN с причиной. PASS ставит только прогонщик по факту прохождения тестов
+# (AUDIT-01): `python -m tests.corpus.run_corpus`.
+# Mock и Replay не доказывают работу Live (TEST-02); статусы ведутся по режимам раздельно.
+
+schema_version: "1.0.0"
+corpus_version: "1.0.0"
+
+blocked:
+  live: &live_blocked
+    status: BLOCKED
+    reason: "Live запрещён до решений DEC-04 (MCP-клиент), DEC-09 (провайдеры), DEC-11 (проверки среды)"
+  llm: &llm_note "фраза на естественном языке требует LLM (DEC-07, LLM off): на Mock проверены ядро и структурированная форма"
+
+scenarios:
+  - id: K-01
+    title: "Хочу на выходные куда-нибудь тепло, недорого"
+    test01: вдохновение без направления
+    requirements: [UC-04, UC-03, DEC-28]
+    modes:
+      mock:
+        expected: "кандидаты из каталога с пометкой ДЕМО; без дат — «стоимость требует дат»; с датами — ДЕМО-оценка partial; нет визовых и климатических утверждений"
+        scope: *llm_note
+        evidence:
+          - tests/e2e/test_s5_inspiration.py::test_inspiration_without_dates_does_not_price_or_invent_dates
+          - tests/e2e/test_s5_inspiration.py::test_inspiration_with_origin_and_dates_estimates_top_candidates
+          - tests/e2e/test_s5_inspiration.py::test_no_climate_forecast_and_no_visa_claims
+          - tests/e2e/test_mock_flow.py::test_inspiration_without_destination_returns_three_marked_candidates
+      live: *live_blocked
+
+  - id: K-02
+    title: Названо направление вне каталога
+    test01: вне каталога
+    requirements: [UC-04, UC-10]
+    modes:
+      mock:
+        expected: "названное направление не ограничено каталогом; город вне справочника — честный ограниченный ответ"
+        evidence:
+          - tests/e2e/test_s5_inspiration.py::test_named_destination_is_not_limited_to_catalog
+          - tests/e2e/test_mock_flow.py::test_city_outside_demo_directory_is_not_invented
+      live:
+        status: BLOCKED
+        reason: "геокодинг на Live запрещён до DEC-09, DEC-11, DEC-12"
+
+  - id: K-03
+    title: "Длинный составной запрос: группа, даты, бюджет, отель, поезд"
+    test01: длинный запрос
+    requirements: [UC-01, UC-05, UC-06, ACCEPT-01]
+    modes:
+      mock:
+        expected: "все условия формы стали условиями закрытого словаря; план с отелем, поездом и трансфером; неполнота видна"
+        scope: *llm_note
+        evidence:
+          - tests/unit/test_services.py::test_structured_form_interpretation
+          - tests/e2e/test_mock_flow.py::test_message_plan_cart_confirm_receipt
+          - tests/e2e/test_s4_replan.py::test_one_more_adult_reprices_and_keeps_conditions
+      live: *live_blocked
+
+  - id: K-04
+    title: "«Не самолётом», «без пересадок»"
+    test01: отрицание
+    requirements: [INTERPRET-01, CONSTRAINT-01]
+    modes:
+      mock:
+        expected: "оператор отрицания (not_in) оценивается кодом; unknown не равен matched"
+        scope: *llm_note
+        evidence:
+          - tests/unit/test_core.py::test_each_evaluator_status
+      live: *live_blocked
+
+  - id: K-05
+    title: Не указан город отправления → один блокирующий вопрос
+    test01: уточнения
+    requirements: [UC-02, UC-03]
+    modes:
+      mock:
+        expected: "ровно один вопрос blocking_now о городе отправления; город не предполагается"
+        evidence:
+          - tests/e2e/test_corpus_extra.py::test_missing_origin_gives_one_blocking_question
+          - tests/unit/test_s4_dialog.py::test_three_blocking_classes_and_only_blocking_fields_are_asked
+      live:
+        status: BLOCKED
+        reason: "Live-диалог требует LLM (DEC-07) и Live-провайдеров (DEC-09)"
+
+  - id: K-06
+    title: Ответ на уточнение не вызывает повторных вопросов
+    test01: уточнения
+    requirements: [UC-02]
+    modes:
+      mock:
+        expected: "ответ дополняет прежние данные; повторных вопросов нет; обязательность не теряется"
+        evidence:
+          - tests/e2e/test_s4_replan.py::test_clarification_answer_is_merged_without_repeated_questions
+          - tests/unit/test_s4_dialog.py::test_answer_supplements_previous_data_without_repeating_questions
+
+  - id: K-07
+    title: Условие не применимо (not_applicable) против неизвестного (unknown)
+    test01: unknown ≠ not_applicable
+    requirements: [CONSTRAINT-01, UC-02]
+    modes:
+      mock:
+        expected: "not_applicable только по явной схеме применимости; unknown не равен matched"
+        evidence:
+          - tests/unit/test_core.py::test_unknown_is_not_not_applicable_and_not_matched
+          - tests/unit/test_s4_dialog.py::test_unknown_and_not_applicable_are_distinct
+
+  - id: K-08
+    title: "«4★ или апартаменты с кухней»"
+    test01: OR
+    requirements: [INTERPRET-01, CONSTRAINT-01]
+    modes:
+      mock:
+        expected: "OR оценивается деревом условий, не смешивается с AND"
+        scope: *llm_note
+        evidence:
+          - tests/unit/test_core.py::test_and_or_matrix
+          - tests/unit/test_s3_core.py::test_and_or_fallback_conflicts_in_nested_tree
+      live: *live_blocked
+
+  - id: K-09
+    title: "«Если нет 4★ — 3★ с завтраком»"
+    test01: FALLBACK
+    requirements: [FALLBACK-01, INTERPRET-01]
+    modes:
+      mock:
+        expected: "FALLBACK активируется только при доказанном условии и завершённом поиске"
+        scope: *llm_note
+        evidence:
+          - tests/unit/test_core.py::test_fallback_without_proven_activation_keeps_primary_branch
+          - tests/unit/test_core.py::test_fallback_is_not_activated_when_primary_matched_or_search_incomplete
+          - tests/unit/test_s3_core.py::test_and_or_fallback_conflicts_in_nested_tree
+      live: *live_blocked
+
+  - id: K-10
+    title: Вложенные группы и нераспознанная фраза
+    test01: вложенность, unparsed
+    requirements: [INTERPRET-01, COVERAGE-01]
+    modes:
+      mock:
+        expected: "вложенное дерево оценивается; unparsed сохраняется и даёт unknown; циклы и висячие ссылки — unknown"
+        evidence:
+          - tests/unit/test_s3_core.py::test_and_or_fallback_conflicts_in_nested_tree
+          - tests/unit/test_s3_core.py::test_tree_cycle_and_dangling_reference_are_unknown
+          - tests/unit/test_core.py::test_unparsed_group_is_kept_as_unknown
+
+  - id: K-11
+    title: "«В следующие выходные», «через две недели»"
+    test01: относительные даты
+    requirements: [INTERPRET-02]
+    modes:
+      mock:
+        expected: "даты разрешены по правилу с записью статуса; по местной дате пояса"
+        scope: *llm_note
+        evidence:
+          - tests/unit/test_s3_core.py::test_calendar_resolves_with_rule
+          - tests/unit/test_s3_core.py::test_calendar_uses_local_date_of_timezone
+          - tests/unit/test_s3_core.py::test_next_weekend_on_friday_is_resolved
+      live: *live_blocked
+
+  - id: K-12
+    title: Ребёнок 6 лет
+    test01: ребёнок
+    requirements: [HOTEL-01, PRICE-01]
+    modes:
+      mock:
+        expected: "возраст ребёнка передан во все поиски и размещение"
+        evidence:
+          - tests/e2e/test_corpus_extra.py::test_child_six_years_is_carried_to_every_search
+      live: *live_blocked
+
+  - id: K-13
+    title: Неоднозначная дата → вопрос
+    test01: неразрешённая дата
+    requirements: [INTERPRET-02, UC-10]
+    modes:
+      mock:
+        expected: "даты не выдумываются; неоднозначность → вопрос"
+        evidence:
+          - tests/unit/test_s3_core.py::test_calendar_does_not_invent_dates
+          - tests/e2e/test_uc10_matrix.py::test_unexpected_request_gives_limited_answer_or_question
+
+  - id: K-14
+    title: Пять гостей, два номера
+    test01: 5 гостей / 2 номера
+    requirements: [HOTEL-01, PRICE-01]
+    modes:
+      mock:
+        expected: "совместная доступность комплекта; цена = сумма номеров × ночи (27 000 ₽)"
+        evidence:
+          - tests/unit/test_s3_core.py::test_two_rooms_5000_and_4000_for_three_nights_is_27000
+          - tests/unit/test_s3_core.py::test_one_room_unavailable_makes_set_unavailable
+          - tests/unit/test_s3_core.py::test_independent_but_not_joint_availability_is_unknown
+      live:
+        status: BLOCKED
+        reason: "Live запрещён (DEC-09); по плану на Live ожидается unknown (V4)"
+
+  - id: K-15
+    title: Состав группы не указан → показанное допущение
+    test01: допущения
+    requirements: [UC-03, DEC-25]
+    modes:
+      mock:
+        expected: "DEC-25 открыт: допущение не делается, задаётся вопрос; допущения (если разрешены) — рядом с суммой"
+        evidence:
+          - tests/unit/test_s4_dialog.py::test_no_assumptions_are_made_and_party_is_asked
+          - tests/unit/test_s4_dialog.py::test_assumptions_are_shown_next_to_the_sum
+          - tests/e2e/test_mock_flow.py::test_missing_party_size_asks_blocking_question
+
+  - id: K-16
+    title: "Прибытие в 06:00, заезд с 14:00"
+    test01: раннее прибытие
+    requirements: [CONNECTION-01, DEC-20]
+    modes:
+      mock:
+        expected: "раннее прибытие — не нарушение; неутверждённый буфер даёт unknown"
+        evidence:
+          - tests/unit/test_core.py::test_early_arrival_is_not_a_violation_and_unapproved_buffer_gives_unknown
+      live: *live_blocked
+
+  - id: K-17
+    title: Стоимость трансфера неизвестна → итог partial
+    test01: неполная сумма
+    requirements: [PRICE-01, DEC-18]
+    modes:
+      mock:
+        expected: "итог partial; известная часть показана"
+        evidence:
+          - tests/e2e/test_s5_inspiration.py::test_transfer_with_unknown_cost_makes_total_partial
+          - tests/unit/test_core.py::test_unknown_component_makes_total_partial_known_lower_bound
+      live: *live_blocked
+
+  - id: K-18
+    title: Поезд прибывает позже начала заезда, обратный рейс раньше выезда
+    test01: конфликт стыковок
+    requirements: [CONNECTION-01, CONNECTION-02]
+    modes:
+      mock:
+        expected: "доказанный конфликт — violated; DST и пояса учтены"
+        evidence:
+          - tests/unit/test_core.py::test_arrival_after_check_in_day_is_violated
+          - tests/unit/test_core.py::test_missing_times_give_unknown_and_return_on_other_day_is_violated
+          - tests/unit/test_s3_core.py::test_dst_transition_and_cross_zone_connection
+
+  - id: K-19
+    title: Приоритетный отель с неизвестной доступностью, другой подтверждён
+    test01: неизвестная доступность
+    requirements: [AVAIL-01, RANK-01]
+    modes:
+      mock:
+        expected: "unknown не превращается в available; неизвестный отель остаётся кандидатом"
+        evidence:
+          - tests/unit/test_core.py::test_availability_semantics_is_strict
+          - tests/unit/test_core.py::test_unknown_hotel_stays_candidate_and_unavailable_is_rejected
+      live: *live_blocked
+
+  - id: K-20
+    title: 0, 1 и много результатов
+    test01: 0/1/много
+    requirements: [RANK-01, ACCEPT-03]
+    modes:
+      mock:
+        expected: "корректная работа при 0, 1 и многих вариантах"
+        evidence:
+          - tests/unit/test_s3_core.py::test_zero_one_many_prices
+
+  - id: K-21
+    title: Равные варианты
+    test01: равные варианты
+    requirements: [RANK-01]
+    modes:
+      mock:
+        expected: "классы без весов; стабильный порядок по каноническому ID"
+        evidence:
+          - tests/unit/test_core.py::test_rank_classes_and_stable_order_without_weights
+
+  - id: K-22
+    title: Изменить даты
+    test01: изменение дат
+    requirements: [UC-09, REPLAN-01, REPLAN-02]
+    modes:
+      mock:
+        expected: "условия сохранены; зависимые компоненты перепроверены; старая корзина — 409; новая переоценена"
+        evidence:
+          - tests/e2e/test_s4_replan.py::test_replan_dates_preserves_conditions_and_reprices_cart
+          - tests/e2e/test_s4_replan.py::test_failed_replan_keeps_last_agreed_revision
+      live:
+        status: BLOCKED
+        reason: "T-E2E-LIVE-02: Live запрещён до DEC-04, DEC-09, DEC-11"
+
+  - id: K-23
+    title: Уменьшить бюджет
+    test01: изменение бюджета
+    requirements: [UC-09, REPLAN-01]
+    modes:
+      mock:
+        expected: "без нового поиска; явный выбор сохранён; бюджет переоценён; нарушение видно"
+        evidence:
+          - tests/e2e/test_s4_replan.py::test_budget_reduction_reevaluates_without_new_search
+      live: *live_blocked
+
+  - id: K-24
+    title: "«Едем с собакой»"
+    test01: животное
+    requirements: [UC-09, REPLAN-01]
+    modes:
+      mock:
+        expected: "правила отеля и транспорта перепроверены; трансфер инвалидирован; прочие условия сохранены"
+        evidence:
+          - tests/e2e/test_s4_replan.py::test_dog_rechecks_hotel_and_transport_rules
+      live: *live_blocked
+
+  - id: K-25
+    title: +1 взрослый
+    test01: изменение группы
+    requirements: [UC-09, REPLAN-01]
+    modes:
+      mock:
+        expected: "цена пересчитана; условия сохранены; всё зависимое перепроверено"
+        evidence:
+          - tests/e2e/test_s4_replan.py::test_one_more_adult_reprices_and_keeps_conditions
+          - tests/unit/test_s3_core.py::test_cart_is_repriced_after_replan
+
+  - id: K-26
+    title: Отказ от покупки и отдельное согласие с рисками
+    test01: отказ, согласия
+    requirements: [UC-08, ARCH-05]
+    modes:
+      mock:
+        expected: "отказ ничего не оформляет; два раздельных согласия; повтор не дублирует чек; checkout не вызывается"
+        evidence:
+          - tests/e2e/test_mock_flow.py::test_decline_creates_nothing
+          - tests/e2e/test_mock_flow.py::test_confirmation_requires_both_consents
+          - tests/e2e/test_mock_flow.py::test_double_confirmation_returns_same_receipt
+          - tests/e2e/test_s4_replan.py::test_external_checkout_is_never_called
+          - tests/e2e/test_s4_replan.py::test_stale_cart_requires_recheck_or_separate_consent
+
+  - id: K-27
+    title: Сбой провайдера
+    test01: сбой провайдера
+    requirements: [SCOPE-01, SEARCH-STOP-01, UC-10]
+    modes:
+      mock:
+        expected: "частичный план без отеля, неполнота видна; остановка не доказывает отсутствие вариантов"
+        evidence:
+          - tests/e2e/test_uc10_matrix.py::test_unexpected_request_gives_limited_answer_or_question
+          - tests/unit/test_s3_core.py::test_timeout_never_proves_empty_search
+          - tests/e2e/test_mock_flow.py::test_call_limit_gives_limits_exhausted_with_unchecked_sources
+
+  - id: K-28
+    title: Replay на другие даты не подставляется
+    test01: неподходящий Replay
+    requirements: [DATA-MODE-03, ACCEPT-01]
+    modes:
+      replay:
+        expected: "Replay используется только при совпадении значимых параметров"
+        evidence:
+          - tests/unit/test_s3_core.py::test_live_to_replay_only_with_matching_parameters
+          - tests/unit/test_s3_core.py::test_replay_availability_is_unknown
+
+  - id: K-29
+    title: Mock виден в каждой карточке
+    test01: видимость Mock
+    requirements: [DATA-MODE-01, UI-01]
+    modes:
+      mock:
+        expected: "data_mode=mock у каждого оффера, компонента и позиции корзины; ДЕМО в ответе"
+        evidence:
+          - tests/e2e/test_corpus_extra.py::test_mock_is_visible_in_every_card
+          - tests/unit/test_tools.py::test_mock_offers_are_marked_demo_and_never_available
+
+  - id: K-30
+    title: "Неожиданный запрос: несуществующий город или вне области"
+    test01: неожиданный запрос
+    requirements: [UC-10]
+    modes:
+      mock:
+        expected: "ограниченный полезный ответ или вопрос; без галлюцинаций и ложного успеха"
+        evidence:
+          - tests/e2e/test_uc10_matrix.py::test_unexpected_request_gives_limited_answer_or_question
+      live: *live_blocked

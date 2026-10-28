@@ -1,0 +1,92 @@
+# Манифест данных (`data_manifest`) — происхождение, режим, лицензии (ТЗ 0.7 §12, GOAL-02, LEGAL-01)
+#
+# Каждый набор данных, включённый в репозиторий или используемый приложением, описан здесь.
+# Наборы, которые ещё не загружены, помечены status: not_included.
+
+schema_version: "1.0.0"
+updated_at: "2026-10-25"
+
+datasets:
+  - id: odin_mock_generator
+    status: included
+    location: src/odin/tools/mock_data.py
+    data_mode: mock
+    origin: "синтетические данные, генерируются кодом детерминированно (seed из параметров запроса)"
+    license: "код проекта"
+    limitations: "не цены, не наличие, не расписание; названия «ДЕМО-…»; доступность всегда unknown"
+    rights_confirmed: true
+
+  - id: odin_demo_places
+    status: included
+    location: src/odin/tools/mock_data.py
+    data_mode: mock
+    origin: "демо-справочник: русские названия городов, приблизительные координаты центров и идентификаторы часовых поясов IANA (из базы tzdata)"
+    license: "названия городов, координаты центров и идентификаторы IANA — общедоступные сведения; база tzdata — public domain"
+    limitations: "8 городов; только для Mock-пути S1; город вне списка — честный отказ"
+    rights_confirmed: true
+
+  - id: odin_demo_catalog
+    status: included
+    location: src/odin/tools/mock_data.py
+    data_mode: mock
+    origin: "редакционная заготовка команды: названия городов и теги закрытого словаря"
+    license: "текст проекта"
+    limitations: "5 направлений (DEC-28 открыт); теги не проверены внешним источником; климат не загружен (DEC-12); визы не проверены; ДЕМО-оценка стоимости и времени пути считается кодом из Mock и всегда partial"
+    rights_confirmed: true
+
+  - id: transit_points_table
+    status: included
+    location: src/odin/tools/places.py
+    data_mode: mock
+    origin: "редакционная таблица команды: вокзалы и аэропорты 8 городов с ориентировочными координатами (общедоступные сведения)"
+    license: "текст проекта"
+    limitations: "координаты ориентировочные; используются только для оценки времени трансфера OSRM (estimate_osrm), не дают matched стыка"
+    rights_confirmed: true
+
+  - id: live_synthetic_fixtures
+    status: included
+    location: tests/live_fixtures.py
+    data_mode: mock
+    origin: "синтетические ответы в формате Tutu MCP / Open-Meteo / OSRM; структура — по пробе 25.10.2026 (DEC-11), значения вымышлены"
+    license: "код проекта"
+    limitations: "только для тестов; реальные ответы провайдеров не включены"
+    rights_confirmed: true
+
+  - id: llm_interpretation_replay
+    status: not_included
+    location: "ODIN_LLM_REPLAY_DIR (локально, исключено из git)"
+    data_mode: replay
+    origin: "реально записанные ответы LLM-интерпретатора при ODIN_LLM_RECORD=true"
+    license: "условия провайдера LLM — DEC-07, DEC-33"
+    limitations: "на 25.10 записей нет; в поставку не входят"
+    rights_confirmed: false
+
+  - id: provider_replay_snapshots
+    status: not_included
+    location: "ODIN_REPLAY_DIR (var/replay_store или /data/replay_store, исключено из git)"
+    data_mode: replay
+    origin: "ответы утверждённых Live-провайдеров (Tutu MCP, Open-Meteo, OSRM), записываются автоматически при успешном Live"
+    license: "права на распространение не подтверждены — DEC-24, DEC-33"
+    limitations: "в поставку не входят до решения"
+    rights_confirmed: false
+
+  - id: ourairports
+    status: not_included
+    data_mode: live_snapshot
+    origin: "OurAirports CSV (однократная загрузка — DEC-12)"
+    license: "public domain (подтвердить — DEC-33)"
+    rights_confirmed: false
+
+  - id: climate_norms
+    status: not_included
+    data_mode: live_snapshot
+    origin: "Open-Meteo archive/climate (S5, DEC-12)"
+    license: "CC BY 4.0 / некоммерческий тариф — DEC-33"
+    rights_confirmed: false
+
+  - id: research_probe_json
+    status: not_included
+    origin: "первичные JSON раундов 1–17.1"
+    license: "—"
+    limitations: "на машине отсутствуют; файл 17.1 может содержать временный ключ 2ГИС — не импортировать без очистки"
+    rights_confirmed: false

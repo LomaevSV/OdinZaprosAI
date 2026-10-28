@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:ReplanEvent",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "old_revision": {
+      "title": "Old Revision",
+      "type": "integer"
+    },
+    "change_set": {
+      "additionalProperties": true,
+      "title": "Change Set",
+      "type": "object"
+    },
+    "invalidated_components": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Invalidated Components",
+      "type": "array"
+    },
+    "reused_components": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reused Components",
+      "type": "array"
+    },
+    "new_revision": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "New Revision"
+    },
+    "validation_result": {
+      "enum": [
+        "ok",
+        "failed",
+        "partial"
+      ],
+      "title": "Validation Result",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    }
+  },
+  "required": [
+    "request_id",
+    "old_revision",
+    "change_set",
+    "invalidated_components",
+    "reused_components",
+    "new_revision",
+    "validation_result"
+  ],
+  "title": "ReplanEvent",
+  "type": "object"
+}

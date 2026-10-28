@@ -1,0 +1,991 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:TripRequest",
+  "$defs": {
+    "Ambiguity": {
+      "additionalProperties": false,
+      "properties": {
+        "ambiguity_id": {
+          "title": "Ambiguity Id",
+          "type": "string"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "blocking_class": {
+          "enum": [
+            "blocking_now",
+            "assumable_only_if_authorized",
+            "optional"
+          ],
+          "title": "Blocking Class",
+          "type": "string"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Span"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AmbiguityOption"
+          },
+          "maxItems": 4,
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ambiguity_id",
+        "field",
+        "question",
+        "blocking_class",
+        "source_span"
+      ],
+      "title": "Ambiguity",
+      "type": "object"
+    },
+    "AmbiguityOption": {
+      "additionalProperties": false,
+      "description": "Вариант ответа на уточнение, выбираемый нажатием (DATE-003): предложение дат, а не бронь.",
+      "properties": {
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "date_from": {
+          "format": "date",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "format": "date",
+          "title": "Date To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label",
+        "date_from",
+        "date_to"
+      ],
+      "title": "AmbiguityOption",
+      "type": "object"
+    },
+    "Assumption": {
+      "additionalProperties": false,
+      "description": "Только показанные предварительные допущения о составе группы или числе ночей (UC-03).",
+      "properties": {
+        "assumption_id": {
+          "title": "Assumption Id",
+          "type": "string"
+        },
+        "field": {
+          "enum": [
+            "party",
+            "nights"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "shown_with_price": {
+          "title": "Shown With Price",
+          "type": "boolean"
+        },
+        "authorized_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Authorized By"
+        }
+      },
+      "required": [
+        "assumption_id",
+        "field",
+        "value",
+        "reason",
+        "shown_with_price",
+        "authorized_by"
+      ],
+      "title": "Assumption",
+      "type": "object"
+    },
+    "Budget": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "description": "Decimal строкой",
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "description": "Код ISO 4217",
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "scope": {
+          "const": "trip_total",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "scope"
+      ],
+      "title": "Budget",
+      "type": "object"
+    },
+    "Constraint": {
+      "additionalProperties": false,
+      "description": "Пользовательское условие с доказуемой связью с фрагментом сообщения (UC-01, INTERPRET-01).",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "constraint_id": {
+          "title": "Constraint Id",
+          "type": "string"
+        },
+        "field": {
+          "enum": [
+            "budget_total",
+            "transport_mode",
+            "pets",
+            "hotel_breakfast",
+            "hotel_stars_min",
+            "hotel_free_cancellation",
+            "hotel_room_type"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "ne",
+            "lte",
+            "gte",
+            "in",
+            "not_in"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "requiredness": {
+          "enum": [
+            "required",
+            "preferred"
+          ],
+          "title": "Requiredness",
+          "type": "string"
+        },
+        "source_span": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Source Span",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "text_span",
+            "form_field"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "trip",
+            "hotel",
+            "transport",
+            "transfer"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Confidence"
+        },
+        "ambiguity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ambiguity"
+        }
+      },
+      "required": [
+        "constraint_id",
+        "field",
+        "operator",
+        "value",
+        "requiredness",
+        "source_span",
+        "source_kind",
+        "scope",
+        "confidence",
+        "ambiguity"
+      ],
+      "title": "Constraint",
+      "type": "object"
+    },
+    "ConstraintGroup": {
+      "additionalProperties": false,
+      "description": "Группа условий: AND, OR, FALLBACK не взаимозаменяемы; unparsed не теряется (INTERPRET-01).",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "group_id": {
+          "title": "Group Id",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "AND",
+            "OR",
+            "FALLBACK",
+            "unparsed"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "children": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Children",
+          "type": "array"
+        },
+        "scope": {
+          "enum": [
+            "trip",
+            "hotel",
+            "transport",
+            "transfer"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "activation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FallbackActivation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raw_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Raw Text"
+        }
+      },
+      "required": [
+        "group_id",
+        "operator",
+        "children",
+        "scope",
+        "activation",
+        "raw_text"
+      ],
+      "title": "ConstraintGroup",
+      "type": "object"
+    },
+    "DateExpression": {
+      "additionalProperties": false,
+      "description": "Выражение даты (INTERPRET-02): разрешается детерминированным календарём.",
+      "properties": {
+        "raw_text": {
+          "title": "Raw Text",
+          "type": "string"
+        },
+        "reference_datetime": {
+          "format": "date-time",
+          "title": "Reference Datetime",
+          "type": "string"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        },
+        "rule": {
+          "title": "Rule",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "resolved",
+            "ambiguous",
+            "unresolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "resolved_start": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resolved Start"
+        },
+        "resolved_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resolved End"
+        }
+      },
+      "required": [
+        "raw_text",
+        "reference_datetime",
+        "timezone",
+        "rule",
+        "status",
+        "resolved_start",
+        "resolved_end"
+      ],
+      "title": "DateExpression",
+      "type": "object"
+    },
+    "DateRange": {
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "timezone"
+      ],
+      "title": "DateRange",
+      "type": "object"
+    },
+    "FallbackActivation": {
+      "additionalProperties": false,
+      "description": "Активация резервной группы (INTERPRET-01, FALLBACK-01). Статусы — DEC-30.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "group_id": {
+          "title": "Group Id",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "search_completeness": {
+          "enum": [
+            "complete",
+            "incomplete",
+            "unknown"
+          ],
+          "title": "Search Completeness",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "activated",
+            "not_activated",
+            "undetermined"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "group_id",
+        "trigger",
+        "search_completeness",
+        "status"
+      ],
+      "title": "FallbackActivation",
+      "type": "object"
+    },
+    "Party": {
+      "additionalProperties": false,
+      "description": "Состав группы. Неизвестное — null, а не выдуманное значение (UC-03).",
+      "properties": {
+        "adults": {
+          "anyOf": [
+            {
+              "maximum": 9,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Adults"
+        },
+        "children_ages": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Children Ages",
+          "type": "array"
+        },
+        "pets": {
+          "items": {
+            "$ref": "#/$defs/PetInfo"
+          },
+          "title": "Pets",
+          "type": "array"
+        },
+        "rooms": {
+          "anyOf": [
+            {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rooms"
+        }
+      },
+      "required": [
+        "adults"
+      ],
+      "title": "Party",
+      "type": "object"
+    },
+    "PetInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "dog",
+            "cat",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "count": {
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "count"
+      ],
+      "title": "PetInfo",
+      "type": "object"
+    },
+    "Place": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "country_code": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Country Code"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "maximum": 90,
+              "minimum": -90,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lat"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": -180,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lon"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "country_code",
+        "timezone",
+        "lat",
+        "lon",
+        "source"
+      ],
+      "title": "Place",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "Происхождение существенного факта (DATA-MODE-02, CONTRACT-01).\n\n``verification_status=verified`` означает подтверждение конкретным источником, а не объективную истину.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "mcp",
+            "rest_api",
+            "local_dataset",
+            "mock_generator",
+            "editorial",
+            "user_input",
+            "computed",
+            "llm"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tool"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://[^\\s]{1,2000}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Url"
+        },
+        "retrieved_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retrieved At"
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generated At"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "external_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "External Id"
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "unverified",
+            "conflicting",
+            "stale"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        },
+        "data_mode": {
+          "enum": [
+            "live",
+            "replay",
+            "mock"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "request_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Parameters"
+        }
+      },
+      "required": [
+        "source_type",
+        "provider",
+        "tool",
+        "url",
+        "retrieved_at",
+        "generated_at",
+        "published_at",
+        "external_id",
+        "verification_status",
+        "data_mode"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Запрос поездки после интерпретации (ТЗ §7).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "raw_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Raw Text"
+    },
+    "input_mode": {
+      "enum": [
+        "structured_form",
+        "free_text_llm",
+        "free_text_replay"
+      ],
+      "title": "Input Mode",
+      "type": "string"
+    },
+    "reference_datetime": {
+      "format": "date-time",
+      "title": "Reference Datetime",
+      "type": "string"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Place"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "destination": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Place"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "date_range": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DateRange"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "party": {
+      "$ref": "#/$defs/Party"
+    },
+    "budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "return_trip": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Return Trip"
+    },
+    "wishes_tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Wishes Tags",
+      "type": "array"
+    },
+    "constraints": {
+      "items": {
+        "$ref": "#/$defs/Constraint"
+      },
+      "title": "Constraints",
+      "type": "array"
+    },
+    "constraint_groups": {
+      "items": {
+        "$ref": "#/$defs/ConstraintGroup"
+      },
+      "title": "Constraint Groups",
+      "type": "array"
+    },
+    "assumptions": {
+      "items": {
+        "$ref": "#/$defs/Assumption"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "ambiguities": {
+      "items": {
+        "$ref": "#/$defs/Ambiguity"
+      },
+      "title": "Ambiguities",
+      "type": "array"
+    },
+    "date_expressions": {
+      "items": {
+        "$ref": "#/$defs/DateExpression"
+      },
+      "title": "Date Expressions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "session_id",
+    "request_id",
+    "raw_text",
+    "input_mode",
+    "reference_datetime",
+    "origin",
+    "destination",
+    "date_range",
+    "party",
+    "budget",
+    "return_trip"
+  ],
+  "title": "TripRequest",
+  "type": "object"
+}

@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:Hotel",
+  "$defs": {
+    "HotelLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "city": {
+          "title": "City",
+          "type": "string"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Address"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        }
+      },
+      "required": [
+        "city",
+        "address",
+        "timezone"
+      ],
+      "title": "HotelLocation",
+      "type": "object"
+    },
+    "Rating": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Scale"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Count"
+        }
+      },
+      "required": [
+        "value",
+        "scale",
+        "count"
+      ],
+      "title": "Rating",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "Происхождение существенного факта (DATA-MODE-02, CONTRACT-01).\n\n``verification_status=verified`` означает подтверждение конкретным источником, а не объективную истину.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "mcp",
+            "rest_api",
+            "local_dataset",
+            "mock_generator",
+            "editorial",
+            "user_input",
+            "computed",
+            "llm"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tool"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://[^\\s]{1,2000}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Url"
+        },
+        "retrieved_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retrieved At"
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generated At"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "external_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "External Id"
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "unverified",
+            "conflicting",
+            "stale"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        },
+        "data_mode": {
+          "enum": [
+            "live",
+            "replay",
+            "mock"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "request_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Parameters"
+        }
+      },
+      "required": [
+        "source_type",
+        "provider",
+        "tool",
+        "url",
+        "retrieved_at",
+        "generated_at",
+        "published_at",
+        "external_id",
+        "verification_status",
+        "data_mode"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "hotel_id": {
+      "title": "Hotel Id",
+      "type": "string"
+    },
+    "source_hotel_id": {
+      "title": "Source Hotel Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "location": {
+      "$ref": "#/$defs/HotelLocation"
+    },
+    "geo": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Geo"
+    },
+    "amenities": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Amenities",
+      "type": "array"
+    },
+    "rating": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Rating"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reviews_summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reviews Summary"
+    },
+    "official_website": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "pattern": "^https?://[^\\s]{1,2000}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Official Website"
+    },
+    "phone": {
+      "anyOf": [
+        {
+          "pattern": "^\\+?[0-9 ()\\-]{5,25}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Phone"
+    },
+    "star_rating": {
+      "anyOf": [
+        {
+          "maximum": 5,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Star Rating"
+    },
+    "pets_allowed": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pets Allowed"
+    },
+    "check_in_from": {
+      "anyOf": [
+        {
+          "format": "time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Check In From"
+    },
+    "check_out_until": {
+      "anyOf": [
+        {
+          "format": "time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Check Out Until"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceReference"
+    }
+  },
+  "required": [
+    "hotel_id",
+    "source_hotel_id",
+    "name",
+    "location",
+    "geo",
+    "rating",
+    "reviews_summary",
+    "official_website",
+    "phone",
+    "star_rating",
+    "pets_allowed",
+    "check_in_from",
+    "check_out_until",
+    "source"
+  ],
+  "title": "Hotel",
+  "type": "object"
+}

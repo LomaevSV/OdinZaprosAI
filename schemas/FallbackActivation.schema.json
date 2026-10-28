@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:FallbackActivation",
+  "additionalProperties": false,
+  "description": "Активация резервной группы (INTERPRET-01, FALLBACK-01). Статусы — DEC-30.",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "group_id": {
+      "title": "Group Id",
+      "type": "string"
+    },
+    "trigger": {
+      "title": "Trigger",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "search_completeness": {
+      "enum": [
+        "complete",
+        "incomplete",
+        "unknown"
+      ],
+      "title": "Search Completeness",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "activated",
+        "not_activated",
+        "undetermined"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "group_id",
+    "trigger",
+    "search_completeness",
+    "status"
+  ],
+  "title": "FallbackActivation",
+  "type": "object"
+}

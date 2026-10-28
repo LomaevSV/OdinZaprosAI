@@ -1,0 +1,366 @@
+# Реестр провайдеров API/MCP — карточки по PROVIDER-01 (ТЗ 0.7)
+#
+# ВАЖНО:
+# - Утверждены (DEC-09, 25.10.2026): tutu_mcp (только чтение), open_meteo (геокодинг, климат), osrm_demo
+#   (оценка времени). Остальные — `owner_decision: null`, `approval_status: proposed`.
+# - Live-вызов разрешён только при `approval_status: approved`, который возникает лишь при
+#   `owner_decision: approved` и записи руководителя в docs/decision_log.md (план §14.1).
+# - `recommendation` — текстовое предложение разработчика, а НЕ право вызова.
+# - `historical_probe_success` и `current_runtime_reachable` — независимые факты.
+# - Источники фактов: ODIN_API_MCP_RESEARCH.md (handoff-3, пробы 23.10.2026), разовые пробы
+#   из среды OpenCode 24.10.2026 (план v0.5.2, §1.4) и минимальная проба 25.10.2026 (DEC-11).
+# - «нет данных» означает, что сведений нет, а не что ограничения отсутствуют.
+# - Ключи и токены в этом файле не хранятся (SECURITY-01).
+
+schema_version: "1.0.0"
+updated_at: "2026-10-25"
+decision_log: docs/decision_log.md
+
+providers:
+
+  - id: tutu_mcp
+    name: Tutu MCP
+    priority: P0
+    purpose: "Межгородний транспорт (ж/д, авиа; автобус и мультимодальные — P1) и гостиницы: поиск и детализация предложений, только чтение"
+    owner_docs_repo:
+      owner: "Tutu.ru"
+      endpoint: "https://mcp.tutu.ru/mcp"
+      documentation: "описания инструментов в tools/list и ресурсы tutu://help/*; отдельная публичная документация — нет данных"
+      repository: "нет данных"
+    integration_type: mcp
+    transport: "Streamable HTTP, ответы JSON или SSE; сервер не выдаёт идентификатор сессии (24.10)"
+    version: "tutu-mcp-server 0.57.3 (research итерация 15; среда 24.10)"
+    license_terms: "нет данных — требуется юридическая проверка условий использования (DEC-33)"
+    auth: "анонимный доступ (tutu://status: token_source=anonymous, 24.10)"
+    cost_quotas: "нет данных о квотах и ограничениях частоты"
+    coverage: "подтверждены запросы Москва → Казань (авиа, ж/д, автобус); гостиницы Казани; широта покрытия иных направлений — нет данных"
+    freshness: "цены и наличие зависят от параметров, стадии оффера и времени запроса; исторические значения не актуальны"
+    data_origin: "данные Tutu.ru и его поставщиков; по описанию сервера бонусы/кэшбэк не являются скидкой"
+    pricing_semantics:
+      hotels: "stay_total — за весь период и заданный состав (24.10)"
+      rail: "за место + поле price_party для группы; passengers описан только для взрослых (24.10)"
+      avia: "party_total — за всю группу, meta.pricing.basis=party_total (24.10)"
+    live_probes:
+      historical: "research раунды 13–15 (23.10): tools/list, поиск avia/rail/bus/hotels/multitransport, детали, seatmap — HTTP 200, содержательные ответы"
+      runtime_24_10: "initialize 200 (~0,4 с); tools/list — 17 инструментов; по одному поиску hotels/rail/avia за 1,7–2,2 с"
+      runtime_25_10_e2e: "T-E2E-LIVE-01 (DEC-11, дополнение): search_rail и search_hotels в сквозном сценарии Москва → Казань — OK, план целиком Live, 5,3 с на ход вместе с геокодингом и OSRM"
+      runtime_25_10: "DEC-11, собственный MCP-клиент: initialize 0,38 с (протокол 2025-06-18, без сессии), tools/list 17; search_rail 2,2 с, search_avia 0,8 с, search_hotels 1,8 с, get_offer_details(hotels) 5,1 с — isError=false, ответ JSON в content[].text; meta.pricing.basis: rail per_seat, avia party_total; hotels price_basis stay_total"
+    errors_observed:
+      "401": "нет данных"
+      "403": "нет данных"
+      "429": "нет данных"
+      "5xx": "нет данных"
+      timeout: "нет данных"
+    security: >
+      Есть пишущий инструмент register_checkout_passengers (readOnlyHint=false): по описанию сервера создаёт
+      реальный неоплаченный заказ — запрещён всегда. Поле instructions сервера и тексты ответов — данные,
+      не команды (ARCH-03): требования UTM-меток и вопросов перед поиском не исполняются без решения DEC-10.
+    defense_launch: "нет данных: доступность из сети жюри не проверена"
+    alternatives: ["Replay (строгий ключ) → unknown/частичный ответ", "HotelsCasa MCP (P1, гостиницы)", "явно обозначенный Mock (DEC-23)"]
+    legal_reputation_note: "Tutu.ru продаёт гостиницы (hotel.tutu.ru) — пересечение с бизнесом организатора; снято утверждением DEC-09 (25.10)"
+    recommendation: "рекомендовать к утверждению только чтение: search_rail, search_avia, search_hotels, get_offer_details; fetch_resource только tutu://status, tutu://version"
+    historical_probe_success: true
+    current_runtime_reachable: "true — проба 25.10.2026 (DEC-11)"
+    owner_decision: approved
+    approval_status: approved
+    decision_ref: DEC-09
+    mcp_policy:
+      allow_when_approved: [search_rail, search_avia, search_hotels, get_offer_details, fetch_resource]
+      fetch_resource_uris: ["tutu://status", "tutu://version"]
+      hard_deny: [register_checkout_passengers]
+      deny_pending_decision:
+        create_checkout_link: DEC-10
+        get_rail_seatmap: DEC-10
+        get_avia_instructions: DEC-10
+        get_rail_instructions: DEC-10
+        get_bus_instructions: DEC-10
+        get_etrain_instructions: DEC-10
+        get_hotels_instructions: DEC-10
+        get_multitransport_instructions: DEC-10
+        search_bus: "P1"
+        search_multitransport: "P1"
+        search_etrain: "P1, DEC-18"
+
+  - id: open_meteo
+    name: Open-Meteo (geocoding, archive/climate; forecast — P1)
+    priority: P0
+    purpose: "Геокодирование с часовым поясом; климатические нормы для вдохновения (норма, не прогноз); прогноз — P1"
+    owner_docs_repo:
+      owner: "Open-Meteo"
+      endpoint: "https://geocoding-api.open-meteo.com/v1/search (геокодинг, проба 25.10); прогноз api.open-meteo.com — P1"
+      documentation: "нет данных в материалах проекта — проверить при DEC-33"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "нет данных"
+    license_terms: "по данным обследования 24.10: CC BY 4.0, бесплатный тариф для некоммерческого использования — требуется юридическая оценка (DEC-33)"
+    auth: "без ключа (бесплатный тариф)"
+    cost_quotas: "нет данных о точных квотах"
+    coverage: "глобальное геокодирование; климат и архив — нет данных о покрытии конкретных точек"
+    freshness: "прогноз — горизонт около 16 дней; архив — исторические данные"
+    data_origin: "модели и реанализ Open-Meteo (детали — нет данных)"
+    live_probes:
+      historical: "research раунды 1–3 (23.10): current, daily, geocoding, forecast schema, rain — HTTP 200"
+      runtime_24_10: "геокодинг, архив, климат — 200; прогноз (api.open-meteo.com) — 3 неудачных соединения"
+      runtime_25_10: "DEC-11: геокодинг «Казань» — 200 за 0,4 с, 3 результата, первый — Казань (RU, Europe/Moscow)"
+    errors_observed:
+      "401": "нет данных"
+      "403": "нет данных"
+      "429": "нет данных"
+      "5xx": "нет данных"
+      timeout: "прогноз: тайм-аут соединения 24.10 из среды OpenCode"
+    security: "ответы — недоверенные данные; проверка координат, часовых поясов, диапазонов"
+    defense_launch: "нет данных"
+    alternatives: ["Nominatim/Photon (геокодинг)", "MET Norway (прогноз, P1)"]
+    recommendation: "рекомендовать к утверждению: геокодинг и архив/климат; прогноз — отложить (P1)"
+    historical_probe_success: true
+    current_runtime_reachable: "true — геокодинг, проба 25.10.2026"
+    owner_decision: approved
+    approval_status: approved
+    decision_ref: DEC-09
+    tool_policy:
+      allow_when_approved: [geocoding, climate]
+
+  - id: osrm_demo
+    name: OSRM (публичный демо-сервер)
+    priority: P0
+    purpose: "Оценка времени и расстояния автомобильного трансфера по дорожной сети. НЕ стоимость, НЕ общественный транспорт, без пробок"
+    owner_docs_repo:
+      owner: "проект OSRM (Project OSRM)"
+      endpoint: "https://router.project-osrm.org (route, table; проба 25.10)"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "нет данных"
+    license_terms: "правила использования демо-сервера — нет данных, требуется проверка (DEC-33)"
+    auth: "без ключа"
+    cost_quotas: "нет данных; публичный демо-сервер без гарантий нагрузки"
+    coverage: "дорожная сеть OSM; качество для конкретных городов — нет данных"
+    freshness: "без учёта пробок и расписаний"
+    data_origin: "OpenStreetMap (атрибуция ODbL — проверить в DEC-33)"
+    live_probes:
+      historical: "research раунды 1–3: маршрут, схема ответа, матрица — HTTP 200"
+      runtime_24_10: "маршрут — 200"
+      runtime_25_10: "DEC-11: маршрут вокзал Казани → Кремль — 200 за 0,4 с, 1,7 км, 4,2 мин"
+    errors_observed:
+      "401": "нет данных"
+      "403": "нет данных"
+      "429": "нет данных"
+      "5xx": "нет данных"
+      timeout: "нет данных"
+    security: "ответы — недоверенные данные"
+    defense_launch: "нет данных"
+    alternatives: ["Valhalla (НП)", "2ГИС public_transport (P1, требует ключа)", "unknown"]
+    recommendation: "рекомендовать к утверждению только как оценку времени без пробок"
+    historical_probe_success: true
+    current_runtime_reachable: "true — проба 25.10.2026"
+    owner_decision: approved
+    approval_status: approved
+    decision_ref: DEC-09
+    tool_policy:
+      allow_when_approved: [table, route]
+
+  - id: ourairports
+    name: OurAirports (CSV, локальная выборка)
+    priority: P0
+    purpose: "Справочник аэропортов (IATA → координаты) для точек прибытия"
+    owner_docs_repo:
+      owner: "OurAirports"
+      endpoint: "CSV-набор данных; точный URL файла в материалах проекта не зафиксирован"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: local_dataset
+    version: "нет данных (снимок будет датирован при загрузке, DEC-12)"
+    license_terms: "public domain (по данным исследования и обследования 24.10) — подтвердить при DEC-33"
+    auth: "не требуется"
+    cost_quotas: "не применимо (однократная загрузка)"
+    coverage: "мировой справочник; использование — выборка по РФ"
+    freshness: "снимок на дату загрузки"
+    data_origin: "сообщество OurAirports"
+    live_probes:
+      historical: "research раунд 4 — pass"
+      runtime_24_10: "CSV — 200"
+    errors_observed: {"401": "не применимо", "403": "не применимо", "429": "не применимо", "5xx": "нет данных", timeout: "нет данных"}
+    security: "валидация кодов IATA и координат при импорте"
+    defense_launch: "локальный файл — не зависит от сети после загрузки"
+    alternatives: ["ручная таблица аэропортов для каталога"]
+    recommendation: "рекомендовать к утверждению; однократная загрузка — DEC-12"
+    historical_probe_success: true
+    current_runtime_reachable: "unknown — последняя проба 24.10.2026"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-09
+
+  - id: nominatim
+    name: Nominatim (OSM)
+    priority: P0
+    purpose: "Резервное геокодирование (не каталог гостиниц, не цены и не наличие)"
+    owner_docs_repo:
+      owner: "OpenStreetMap Foundation (публичный экземпляр)"
+      endpoint: "нет зафиксированного в материалах URL"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "нет данных"
+    license_terms: "данные OSM (атрибуция ODbL) и политика использования публичного экземпляра — проверить (DEC-33)"
+    auth: "без ключа; обязателен User-Agent; не чаще 1 запроса/с (план, прил. A)"
+    cost_quotas: "политика использования — нет данных в материалах"
+    coverage: "глобально; отдельные объекты (вокзал) не найдены 24.10"
+    freshness: "данные OSM"
+    data_origin: "OpenStreetMap"
+    live_probes:
+      historical: "research раунды 1, 3, 4 — положительные запросы"
+      runtime_24_10: "один вокзал не найден (Ч)"
+    errors_observed: {"401": "нет данных", "403": "нет данных", "429": "нет данных", "5xx": "нет данных", timeout: "нет данных"}
+    security: "ответы — недоверенные данные"
+    defense_launch: "нет данных"
+    alternatives: ["Photon", "Open-Meteo geocoding", "запасная таблица точек"]
+    recommendation: "рекомендовать к утверждению как резерв"
+    historical_probe_success: true
+    current_runtime_reachable: "unknown — последняя проба 24.10.2026"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-09
+
+  - id: photon
+    name: Photon (геокодер на данных OSM)
+    priority: P0
+    purpose: "Резервное геокодирование"
+    owner_docs_repo:
+      owner: "нет данных о владельце публичного экземпляра в материалах"
+      endpoint: "нет зафиксированного в материалах URL"
+      documentation: "нет данных"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "нет данных"
+    license_terms: "данные OSM (ODbL); условия публичного экземпляра — нет данных (DEC-33)"
+    auth: "без ключа"
+    cost_quotas: "нет данных"
+    coverage: "нашёл вокзал, не найденный Nominatim (24.10)"
+    freshness: "данные OSM"
+    data_origin: "OpenStreetMap"
+    live_probes:
+      historical: "в исследовании не проверялся (НП)"
+      runtime_24_10: "одна проба — 200, объект найден"
+    errors_observed: {"401": "нет данных", "403": "нет данных", "429": "нет данных", "5xx": "нет данных", timeout: "нет данных"}
+    security: "ответы — недоверенные данные"
+    defense_launch: "нет данных"
+    alternatives: ["Nominatim", "Open-Meteo geocoding"]
+    recommendation: "рекомендовать к утверждению как резерв"
+    historical_probe_success: false
+    current_runtime_reachable: "unknown — последняя проба 24.10.2026"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-09
+
+  - id: twogis_public_transport
+    name: 2ГИС public_transport/2.0
+    priority: P1
+    purpose: "Маршруты общественного транспорта для трансфера (опциональный адаптер)"
+    owner_docs_repo:
+      owner: "2ГИС"
+      endpoint: "нет зафиксированного в материалах URL"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "public_transport/2.0"
+    license_terms: "нужен собственный лицензированный ключ и условия — DEC-13, DEC-33"
+    auth: "ключ API (временный исследовательский ключ НЕ переиспользуется)"
+    cost_quotas: "демо-ключ мог ограничивать дальность (~50 км, не подтверждено)"
+    coverage: "подтверждены 3 пары маршрутов в Казани; иные города — нет данных"
+    freshness: "дата, время, расписание, тарифы — не проверены (раунд 18 не выполнен)"
+    data_origin: "2ГИС"
+    live_probes:
+      historical: "раунд 17 — HTTP 400 (тело запроса); раунд 17.1 — 3×HTTP 200, по 3 варианта маршрута"
+      runtime_24_10: "не проверялся (нет ключа)"
+    errors_observed: {"401": "нет данных", "403": "нет данных", "429": "нет данных", "5xx": "нет данных", timeout: "нет данных", "400": "раунд 17 — неверная структура запроса"}
+    security: "файл раунда 17.1 может содержать временный ключ — не импортировать без очистки"
+    defense_launch: "нет данных"
+    alternatives: ["OSRM (только авто, оценка)", "unknown"]
+    recommendation: "revise: подключать после собственного ключа, условий и отдельного утверждения"
+    historical_probe_success: true
+    current_runtime_reachable: "unknown — не проверялся из этой среды"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-13
+
+  - id: hotelscasa_mcp
+    name: HotelsCasa MCP
+    priority: P1
+    purpose: "Второй источник гостиниц и наличия"
+    owner_docs_repo:
+      owner: "HotelsCasa"
+      endpoint: "https://mcp.hotelscasa.com/mcp"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: mcp
+    version: "hotelscasa-mcp 2.0.0 (research итерация 8)"
+    license_terms: "нет данных — DEC-33"
+    auth: "без ключа (по пробам)"
+    cost_quotas: "ограничение частоты по IP — по данным обследования; точные квоты — нет данных"
+    coverage: "Казань (RU) по координатам и датам; Тбилиси — «City not found» (24.10)"
+    freshness: "датированные офферы 10–11.11.2026 (исторические); цена за период ≠ цена ночи × ночи"
+    data_origin: "HotelsCasa и его поставщики; цены в EUR"
+    live_probes:
+      historical: "итерации 8–11: Kazan→TR (ошибка геопривязки), 3 объекта RU по координатам, 2 датированных оффера"
+      runtime_24_10: "initialize — работает; tools/list — 3–4 тайм-аута; поиск Тбилиси — О"
+    errors_observed: {"401": "нет данных", "403": "нет данных", "429": "нет данных", "5xx": "нет данных", timeout: "tools/list — тайм-ауты 24.10"}
+    security: "ответы — недоверенные данные; объединение с Tutu без проверенного соответствия запрещено (REVIEW-01)"
+    defense_launch: "нет данных"
+    alternatives: ["Tutu MCP"]
+    recommendation: "defer (P1, после P0 и DEC-17)"
+    historical_probe_success: true
+    current_runtime_reachable: "partial — initialize работал 24.10, tools/list не отвечал"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-14
+
+  - id: met_norway
+    name: MET Norway (прогноз погоды)
+    priority: P1
+    purpose: "Резервный прогноз погоды"
+    owner_docs_repo:
+      owner: "Норвежский метеорологический институт"
+      endpoint: "нет зафиксированного в материалах URL"
+      documentation: "нет данных в материалах проекта"
+      repository: "нет данных"
+    integration_type: rest_api
+    version: "нет данных"
+    license_terms: "нет данных — DEC-33"
+    auth: "без ключа; обязателен User-Agent (по данным обследования)"
+    cost_quotas: "нет данных"
+    coverage: "нет данных"
+    freshness: "горизонт около 9 дней"
+    data_origin: "MET Norway"
+    live_probes:
+      historical: "НП"
+      runtime_24_10: "одна проба — 200"
+    errors_observed: {"401": "нет данных", "403": "нет данных", "429": "нет данных", "5xx": "нет данных", timeout: "нет данных"}
+    security: "ответы — недоверенные данные"
+    defense_launch: "нет данных"
+    alternatives: ["Open-Meteo forecast"]
+    recommendation: "defer (P1)"
+    historical_probe_success: false
+    current_runtime_reachable: "unknown — последняя проба 24.10.2026"
+    owner_decision: null
+    approval_status: proposed
+    decision_ref: DEC-37
+
+# Внутренние источники — не внешние API/MCP; PROVIDER-01 к ним не применяется.
+# Используются только с видимой маркировкой режима (DATA-MODE-01).
+internal_sources:
+  - id: odin_mock
+    name: "Mock-генератор О!дин (ДЕМО)"
+    data_mode: mock
+    purpose: "Синтетические демонстрационные офферы транспорта, гостиниц и трансфера для S1"
+    enabled_by: "явная конфигурация оператора ODIN_DATA_MODE=mock"
+    limitations: "не цены, не наличие и не расписание; названия «ДЕМО-…»; доступность всегда unknown"
+  - id: odin_demo_catalog
+    name: "Демо-каталог направлений S1 (заготовка)"
+    data_mode: mock
+    purpose: "Заготовка вдохновения: 3 кандидата при отсутствии направления"
+    limitations: "редакционная заготовка без проверенных фактов; климат и цены не загружены (S5, DEC-12/28/33)"
+  - id: odin_demo_places
+    name: "Демо-справочник городов S1"
+    data_mode: mock
+    purpose: "Сопоставление названия города и часового пояса IANA для Mock-пути до появления геокодинга (S2)"
+    limitations: "ограниченный список; город вне списка → честный ответ «не найден в демо-справочнике»"

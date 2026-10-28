@@ -1,0 +1,846 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:TravelOffer",
+  "$defs": {
+    "Availability": {
+      "additionalProperties": false,
+      "description": "Наличие: независимые оси availability_status, verification_status, data_mode (DATA-MODE-02).\n\n``available`` — подтверждение источника на конкретные даты/состав/тариф в пределах его семантики,\nне гарантия покупки. Поисковая выдача и Mock не доказывают наличие (план §2.19).",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "subject": {
+          "enum": [
+            "hotel",
+            "transport",
+            "transfer"
+          ],
+          "title": "Subject",
+          "type": "string"
+        },
+        "availability_status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "unknown"
+          ],
+          "title": "Availability Status",
+          "type": "string"
+        },
+        "evidence_level": {
+          "enum": [
+            "search_listing",
+            "offer_details",
+            "provider_checked",
+            "historical",
+            "mock",
+            "none"
+          ],
+          "title": "Evidence Level",
+          "type": "string"
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "unverified",
+            "conflicting",
+            "stale"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        },
+        "data_mode": {
+          "enum": [
+            "live",
+            "replay",
+            "mock"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Checked At"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "unknown_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "not_provided_by_source",
+                "source_error",
+                "timeout",
+                "budget_exhausted",
+                "not_requested",
+                "estimate_only",
+                "not_supported_field",
+                "mock_data",
+                "currency_unresolved",
+                "price_incomplete",
+                "buffer_not_approved",
+                "decision_pending",
+                "data_missing",
+                "stale"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unknown Reason"
+        },
+        "seats_left": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seats Left"
+        }
+      },
+      "required": [
+        "subject",
+        "availability_status",
+        "evidence_level",
+        "verification_status",
+        "data_mode",
+        "checked_at",
+        "unknown_reason"
+      ],
+      "title": "Availability",
+      "type": "object"
+    },
+    "Fee": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "description": "Decimal строкой",
+              "pattern": "^\\d+(\\.\\d{1,2})?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "description": "Код ISO 4217",
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "included": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Included"
+        }
+      },
+      "required": [
+        "name",
+        "amount",
+        "currency",
+        "included"
+      ],
+      "title": "Fee",
+      "type": "object"
+    },
+    "Place": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "country_code": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Country Code"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "maximum": 90,
+              "minimum": -90,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lat"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "maximum": 180,
+              "minimum": -180,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lon"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "country_code",
+        "timezone",
+        "lat",
+        "lon",
+        "source"
+      ],
+      "title": "Place",
+      "type": "object"
+    },
+    "Price": {
+      "additionalProperties": false,
+      "description": "Нормативные поля PRICE-01. Полная цена — за всех путешественников и весь период.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "description": "Decimal строкой",
+              "pattern": "^\\d+(\\.\\d{1,2})?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "description": "Код ISO 4217",
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "price_scope": {
+          "enum": [
+            "per_person",
+            "per_seat",
+            "party_total",
+            "per_night",
+            "stay_total",
+            "per_room_stay",
+            "trip_total",
+            "unknown"
+          ],
+          "title": "Price Scope",
+          "type": "string"
+        },
+        "guests": {
+          "anyOf": [
+            {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Guests"
+        },
+        "rooms": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rooms"
+        },
+        "period": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PricePeriod"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inclusions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inclusions",
+          "type": "array"
+        },
+        "known_fees": {
+          "items": {
+            "$ref": "#/$defs/Fee"
+          },
+          "title": "Known Fees",
+          "type": "array"
+        },
+        "mandatory_fees_status": {
+          "enum": [
+            "included",
+            "excluded_known",
+            "unknown",
+            "not_applicable"
+          ],
+          "title": "Mandatory Fees Status",
+          "type": "string"
+        },
+        "total_completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "unknown"
+          ],
+          "title": "Total Completeness",
+          "type": "string"
+        },
+        "unknown_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "not_provided_by_source",
+                "source_error",
+                "timeout",
+                "budget_exhausted",
+                "not_requested",
+                "estimate_only",
+                "not_supported_field",
+                "mock_data",
+                "currency_unresolved",
+                "price_incomplete",
+                "buffer_not_approved",
+                "decision_pending",
+                "data_missing",
+                "stale"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unknown Reason"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceReference"
+        },
+        "as_of": {
+          "format": "date-time",
+          "title": "As Of",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency",
+        "price_scope",
+        "guests",
+        "rooms",
+        "period",
+        "mandatory_fees_status",
+        "total_completeness",
+        "unknown_reason",
+        "source",
+        "as_of"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "PricePeriod": {
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "format": "date",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "PricePeriod",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "Происхождение существенного факта (DATA-MODE-02, CONTRACT-01).\n\n``verification_status=verified`` означает подтверждение конкретным источником, а не объективную истину.",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0",
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "mcp",
+            "rest_api",
+            "local_dataset",
+            "mock_generator",
+            "editorial",
+            "user_input",
+            "computed",
+            "llm"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tool"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "pattern": "^https?://[^\\s]{1,2000}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Url"
+        },
+        "retrieved_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retrieved At"
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generated At"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "external_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "External Id"
+        },
+        "verification_status": {
+          "enum": [
+            "verified",
+            "unverified",
+            "conflicting",
+            "stale"
+          ],
+          "title": "Verification Status",
+          "type": "string"
+        },
+        "data_mode": {
+          "enum": [
+            "live",
+            "replay",
+            "mock"
+          ],
+          "title": "Data Mode",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "request_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Parameters"
+        }
+      },
+      "required": [
+        "source_type",
+        "provider",
+        "tool",
+        "url",
+        "retrieved_at",
+        "generated_at",
+        "published_at",
+        "external_id",
+        "verification_status",
+        "data_mode"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "Validity": {
+      "additionalProperties": false,
+      "description": "Срок актуальности оффера. TTL до DEC-21 — provisional, только в сторону осторожности.",
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid Until"
+        },
+        "basis": {
+          "enum": [
+            "provider",
+            "provisional_ttl",
+            "none"
+          ],
+          "title": "Basis",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "observed_at",
+        "valid_until",
+        "basis"
+      ],
+      "title": "Validity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Транспорт или трансфер. Гостиничная семантика доступности не применяется (CONTRACT-02).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "offer_id": {
+      "title": "Offer Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "flight",
+        "rail",
+        "hotel",
+        "transfer",
+        "other"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "direction": {
+      "enum": [
+        "outbound",
+        "return",
+        "transfer_in",
+        "transfer_out",
+        "other"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "departure_place": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Place"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "arrival_place": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Place"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "departure_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Departure At"
+    },
+    "arrival_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Arrival At"
+    },
+    "duration_minutes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Duration Minutes"
+    },
+    "duration_basis": {
+      "enum": [
+        "schedule",
+        "estimate_osrm",
+        "estimate_mock",
+        "unknown"
+      ],
+      "title": "Duration Basis",
+      "type": "string"
+    },
+    "carrier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Carrier"
+    },
+    "pets_allowed": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pets Allowed"
+    },
+    "price": {
+      "$ref": "#/$defs/Price"
+    },
+    "terms": {
+      "additionalProperties": true,
+      "title": "Terms",
+      "type": "object"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceReference"
+    },
+    "availability": {
+      "$ref": "#/$defs/Availability"
+    },
+    "validity": {
+      "$ref": "#/$defs/Validity"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "offer_id",
+    "kind",
+    "direction",
+    "title",
+    "parameters",
+    "departure_place",
+    "arrival_place",
+    "departure_at",
+    "arrival_at",
+    "duration_minutes",
+    "duration_basis",
+    "carrier",
+    "pets_allowed",
+    "price",
+    "source",
+    "availability",
+    "validity"
+  ],
+  "title": "TravelOffer",
+  "type": "object"
+}

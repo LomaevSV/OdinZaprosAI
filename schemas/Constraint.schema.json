@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:Constraint",
+  "additionalProperties": false,
+  "description": "Пользовательское условие с доказуемой связью с фрагментом сообщения (UC-01, INTERPRET-01).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "constraint_id": {
+      "title": "Constraint Id",
+      "type": "string"
+    },
+    "field": {
+      "enum": [
+        "budget_total",
+        "transport_mode",
+        "pets",
+        "hotel_breakfast",
+        "hotel_stars_min",
+        "hotel_free_cancellation",
+        "hotel_room_type"
+      ],
+      "title": "Field",
+      "type": "string"
+    },
+    "operator": {
+      "enum": [
+        "eq",
+        "ne",
+        "lte",
+        "gte",
+        "in",
+        "not_in"
+      ],
+      "title": "Operator",
+      "type": "string"
+    },
+    "value": {
+      "title": "Value"
+    },
+    "requiredness": {
+      "enum": [
+        "required",
+        "preferred"
+      ],
+      "title": "Requiredness",
+      "type": "string"
+    },
+    "source_span": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Source Span",
+      "type": "string"
+    },
+    "source_kind": {
+      "enum": [
+        "text_span",
+        "form_field"
+      ],
+      "title": "Source Kind",
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "trip",
+        "hotel",
+        "transport",
+        "transfer"
+      ],
+      "title": "Scope",
+      "type": "string"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Confidence"
+    },
+    "ambiguity": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Ambiguity"
+    }
+  },
+  "required": [
+    "constraint_id",
+    "field",
+    "operator",
+    "value",
+    "requiredness",
+    "source_span",
+    "source_kind",
+    "scope",
+    "confidence",
+    "ambiguity"
+  ],
+  "title": "Constraint",
+  "type": "object"
+}

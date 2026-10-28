@@ -1,0 +1,56 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Секреты и локальная конфигурация (SECURITY-01)
+.env
+.env.*
+!.env.example
+
+# Локальные данные выполнения: SQLite, Replay-снимки, журналы (DEC-24, SECURITY-01)
+var/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+replay_store/
+*.log
+
+# Материалы аудита, архивы выгрузок и пакеты патчей не входят в поставку (интегрируются только изменения)
+audit_files*
+odin_audit_*
+*.tar.gz
+*.tgz
+*.zip
+*.patch
+*.diff
+*.orig
+*.rej
+patch_package*/
+/audit_packages/
+# Журналы приёмки Docker (прикладываются к отчёту отдельно)
+docker_check/
+
+# Исходные исследовательские JSON не импортируются (возможен ключ 2ГИС)
+research_raw/
+odin_probe_*.json
+
+# Сырые результаты прогонов (отчёты в docs/reports/ коммитятся)
+reports/raw/
+
+# IDE
+.idea/
+.vscode/
+
+# VPS local backups
+*.bak-before-*
+
+# Локальные compose-оверлеи сервера команды (пути и образы VPS) не входят в поставку
+compose.stage*.yaml

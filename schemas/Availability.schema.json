@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:odin:contracts:1.0.0:Availability",
+  "additionalProperties": false,
+  "description": "Наличие: независимые оси availability_status, verification_status, data_mode (DATA-MODE-02).\n\n``available`` — подтверждение источника на конкретные даты/состав/тариф в пределах его семантики,\nне гарантия покупки. Поисковая выдача и Mock не доказывают наличие (план §2.19).",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject": {
+      "enum": [
+        "hotel",
+        "transport",
+        "transfer"
+      ],
+      "title": "Subject",
+      "type": "string"
+    },
+    "availability_status": {
+      "enum": [
+        "available",
+        "unavailable",
+        "unknown"
+      ],
+      "title": "Availability Status",
+      "type": "string"
+    },
+    "evidence_level": {
+      "enum": [
+        "search_listing",
+        "offer_details",
+        "provider_checked",
+        "historical",
+        "mock",
+        "none"
+      ],
+      "title": "Evidence Level",
+      "type": "string"
+    },
+    "verification_status": {
+      "enum": [
+        "verified",
+        "unverified",
+        "conflicting",
+        "stale"
+      ],
+      "title": "Verification Status",
+      "type": "string"
+    },
+    "data_mode": {
+      "enum": [
+        "live",
+        "replay",
+        "mock"
+      ],
+      "title": "Data Mode",
+      "type": "string"
+    },
+    "checked_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Checked At"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "unknown_reason": {
+      "anyOf": [
+        {
+          "enum": [
+            "not_provided_by_source",
+            "source_error",
+            "timeout",
+            "budget_exhausted",
+            "not_requested",
+            "estimate_only",
+            "not_supported_field",
+            "mock_data",
+            "currency_unresolved",
+            "price_incomplete",
+            "buffer_not_approved",
+            "decision_pending",
+            "data_missing",
+            "stale"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Unknown Reason"
+    },
+    "seats_left": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Seats Left"
+    }
+  },
+  "required": [
+    "subject",
+    "availability_status",
+    "evidence_level",
+    "verification_status",
+    "data_mode",
+    "checked_at",
+    "unknown_reason"
+  ],
+  "title": "Availability",
+  "type": "object"
+}
