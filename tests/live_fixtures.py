@@ -144,13 +144,16 @@ def hotels_payload(check_in: date, check_out: date) -> dict:
     }
 
 
-def details_payload(hotel_id: str, check_in: date, check_out: date, adults: int) -> dict:
-    """Детали гостиницы: у «900000» два тарифа (без завтрака дешевле), у «900001» — нет номеров на даты."""
+def details_payload(
+    hotel_id: str, check_in: date, check_out: date, adults: int, children_ages: list[int] | None = None
+) -> dict:
+    """Детали гостиницы: у «900000» два тарифа (без завтрака дешевле), у «900001» — нет номеров на даты.
+    Состав гостей ответ повторяет из запроса, как Tutu."""
     stay = {
         "check_in": check_in.isoformat(),
         "check_out": check_out.isoformat(),
         "nights": (check_out - check_in).days,
-        "guests": {"adults": adults, "children_ages": []},
+        "guests": {"adults": adults, "children_ages": list(children_ages or [])},
     }
     hotel = {
         "hotel_id": hotel_id,
@@ -342,6 +345,7 @@ class FakeTutu:
                 date.fromisoformat(arguments["check_in"]),
                 date.fromisoformat(arguments["check_out"]),
                 arguments["adults"],
+                arguments.get("children_ages"),
             )
         return {}
 

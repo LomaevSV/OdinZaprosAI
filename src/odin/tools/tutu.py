@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from datetime import date, datetime, time
 from typing import Any
@@ -135,12 +137,43 @@ def avia_arguments(
     }
 
 
+# PATCH-63G-01: число взрослых в одном номере, которое передаётся Tutu без изменений. Больше — явная ошибка
+# до обращения к поставщику: цена, рассчитанная на другое число взрослых, предложением не становится.
+MAX_HOTEL_ADULTS = 6
+MAX_CHILD_AGE = 17
+
+
+class UnsupportedGuests(ValueError):
+    """Состав гостей, который нельзя передать Tutu как есть (без молчаливого «обрезания»)."""
+
+    error_code = "guests_not_supported_by_source"
+
+
+def check_hotel_guests(adults: Any, children_ages: list[Any]) -> None:
+    if isinstance(adults, bool) or not isinstance(adults, int) or adults < 1:
+        raise UnsupportedGuests(
+            "Tutu: поиск гостиниц недоступен — нужен состав гостей: не меньше 1 взрослого"
+        )
+    if adults > MAX_HOTEL_ADULTS:
+        raise UnsupportedGuests(
+            f"Tutu: поиск гостиниц для {adults} взрослых в одном номере недоступен — источник принимает "
+            f"от 1 до {MAX_HOTEL_ADULTS} взрослых; предложения не запрашивались, цена для другого состава "
+            "не подставляется"
+        )
+    for age in children_ages:
+        if isinstance(age, bool) or not isinstance(age, int) or not 0 <= age <= MAX_CHILD_AGE:
+            raise UnsupportedGuests(
+                f"Tutu: поиск гостиниц недоступен — возраст ребёнка должен быть от 0 до {MAX_CHILD_AGE} лет"
+            )
+
+
 def hotel_arguments(city: str, check_in: str, check_out: str, adults: int, children_ages: list[int]):
+    check_hotel_guests(adults, children_ages)
     return {
         "city_name": city,
         "check_in": check_in,
         "check_out": check_out,
-        "adults": max(1, min(6, adults)),
+        "adults": adults,
         "children_ages": list(children_ages) or None,
         "page_size": PAGE_SIZE,
     }
@@ -355,6 +388,114 @@ def _rail_terms(raw: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------- нормализация гостиниц
 
 
+# PATCH-63G-02: идентичность гостиничного предложения. Позиция тарифа в списке идентичностью не является:
+# в идентификатор входят гостиница, даты, состав гостей, номер и тариф. Устойчивый идентификатор тарифа
+# поставщика (если он есть в ответе) используется вместо характеристик тарифа; иначе — подтверждённые
+# характеристики (номер, питание, отмена, основа и сумма цены). Те же условия → тот же идентификатор;
+# другие даты или гости → другой, поэтому котировка прежней ревизии не совпадёт с новой.
+_SUPPLIER_RATE_KEYS = ("rate_id", "rate_key", "tariff_id", "offer_id", "offer_key")
+_SUPPLIER_ROOM_KEYS = ("room_id", "room_type_id", "room_key")
+
+
+def _supplier_key(item: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            continue
+        text = safe_text(str(value), 120)
+        if text:
+            return f"{key}={text}"
+    return None
+
+
+def hotel_offer_identity(
+    *,
+    source_hotel_id: str,
+    check_in: date,
+    check_out: date,
+    adults: int,
+    children_ages: list[int],
+    room: dict[str, Any],
+    rate: dict[str, Any],
+) -> str:
+    """Детерминированный отпечаток предложения (16 hex): одинаков при перестановке тарифов в ответе."""
+    identity: dict[str, Any] = {
+        "hotel": source_hotel_id,
+        "check_in": check_in.isoformat(),
+        "check_out": check_out.isoformat(),
+        "adults": adults,
+        "children_ages": sorted(children_ages),
+        "rooms": 1,
+        "room": _supplier_key(room, _SUPPLIER_ROOM_KEYS) or safe_text(room.get("room_name"), 160),
+    }
+    supplier_rate = _supplier_key(rate, _SUPPLIER_RATE_KEYS)
+    if supplier_rate is not None:
+        identity["rate"] = supplier_rate
+    else:
+        price = rate.get("price") if isinstance(rate.get("price"), dict) else {}
+        meal = rate.get("meal") if isinstance(rate.get("meal"), dict) else {}
+        identity["tariff"] = {
+            "price_basis": rate.get("price_basis"),
+            "amount": str(to_money(price)) if to_money(price) is not None else None,
+            "currency": price.get("currency"),
+            "breakfast": rate.get("breakfast_included")
+            if isinstance(rate.get("breakfast_included"), bool)
+            else None,
+            "meal": safe_text(meal.get("name") or rate.get("meal_name"), 80),
+            "free_cancellation": rate.get("free_cancellation")
+            if isinstance(rate.get("free_cancellation"), bool)
+            else None,
+            "free_cancellation_until": safe_text(rate.get("free_cancellation_until"), 40),
+        }
+    blob = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def guests_match(item: dict[str, Any], adults: int, children_ages: list[int]) -> tuple[bool, bool]:
+    """PATCH-63G-03: (совпадает, подтверждено). Явное расхождение — не совпадает; отсутствующие сведения —
+    совпадают, но не подтверждены. Поля, которых в ответе нет, не требуются."""
+    adults_raw = item.get("adults")
+    adults_ok = adults_raw is None or _as_int(adults_raw) == adults
+    ages_raw = item.get("children_ages")
+    count_raw = item.get("children")
+    ages_known = isinstance(ages_raw, list)
+    if ages_raw is not None and not ages_known:
+        return False, False
+    ages = [_as_int(age) for age in ages_raw] if ages_known else []
+    ages_ok = not ages_known or sorted(ages, key=lambda a: -1 if a is None else a) == sorted(children_ages)
+    count = _as_int(count_raw)
+    count_known = count is not None
+    count_ok = not count_known or count == len(children_ages)
+    matched = adults_ok and ages_ok and count_ok
+    confirmed = adults_raw is not None and (ages_known or (count_known and not children_ages))
+    return matched, matched and confirmed
+
+
+def _rate_guests_conflict(
+    room: dict[str, Any], rate: dict[str, Any], adults: int, children_ages: list[int]
+) -> bool:
+    """Явный состав или вместимость у номера/тарифа противоречат запросу — тариф не для этого состава."""
+    for item in (room, rate):
+        for nested in (item, item.get("guests"), item.get("occupancy")):
+            if isinstance(nested, dict) and not guests_match(nested, adults, children_ages)[0]:
+                return True
+        for key, total in (("max_adults", adults), ("max_guests", adults + len(children_ages))):
+            limit = _as_int(item.get(key))
+            if limit is not None and limit < total:
+                return True
+    return False
+
+
 def normalize_hotels(
     payload: dict[str, Any],
     *,
@@ -373,7 +514,17 @@ def normalize_hotels(
     stay = payload.get("stay") if isinstance(payload.get("stay"), dict) else {}
     if stay.get("check_in") != check_in.isoformat() or stay.get("check_out") != check_out.isoformat():
         return [], [], ["Tutu search_hotels: даты ответа не совпадают с запросом — результат не используется"]
+    guests = stay.get("guests")
+    if guests is not None and not (
+        isinstance(guests, dict) and guests_match(guests, adults, children_ages)[0]
+    ):
+        return (
+            [],
+            [],
+            ["Tutu search_hotels: состав гостей ответа не совпадает с запросом — результат не используется"],
+        )
     hotels: list[Hotel] = []
+    seen: set[str] = set()
     offers: list[HotelOffer] = []
     for raw in (payload.get("hotels") or [])[:PAGE_SIZE]:
         if not isinstance(raw, dict):
@@ -433,6 +584,23 @@ def normalize_hotels(
             )
         )
         best = raw.get("best_offer") if isinstance(raw.get("best_offer"), dict) else {}
+        if _rate_guests_conflict({}, best, adults, children_ages):
+            warnings.append(
+                f"Tutu search_hotels: «{name}» — тариф для другого состава гостей не используется"
+            )
+            continue
+        offer_id = f"TUTU-HO-{source_id}-{check_in.isoformat()}-" + hotel_offer_identity(
+            source_hotel_id=source_id,
+            check_in=check_in,
+            check_out=check_out,
+            adults=adults,
+            children_ages=children_ages,
+            room=best,
+            rate=best,
+        )
+        if offer_id in seen:
+            continue
+        seen.add(offer_id)
         price_raw = best.get("price") if isinstance(best.get("price"), dict) else {}
         amount = to_money(price_raw) if best.get("price_basis") == "stay_total" else None
         currency = price_raw.get("currency") if amount is not None else None
@@ -457,7 +625,7 @@ def normalize_hotels(
         )
         offers.append(
             HotelOffer(
-                offer_id=f"TUTU-HO-{source_id}-{check_in.isoformat()}",
+                offer_id=offer_id,
                 hotel_id=hotel_id,
                 check_in=check_in,
                 check_out=check_out,
@@ -501,12 +669,13 @@ def normalize_hotels(
 def details_arguments(
     source_hotel_id: str, check_in: str, check_out: str, adults: int, children_ages: list[int]
 ) -> dict[str, Any]:
+    check_hotel_guests(adults, children_ages)
     arguments: dict[str, Any] = {
         "product_type": "hotels",
         "hotel_id": source_hotel_id,
         "check_in": check_in,
         "check_out": check_out,
-        "adults": max(1, min(6, adults)),
+        "adults": adults,
     }
     if children_ages:
         arguments["children_ages"] = list(children_ages)
@@ -567,7 +736,6 @@ def normalize_hotel_details(
     Чужие даты или состав в ответе — результат не используется.
     """
     stay = payload.get("stay") if isinstance(payload.get("stay"), dict) else {}
-    guests = stay.get("guests") if isinstance(stay.get("guests"), dict) else {}
     if stay.get("check_in") != check_in.isoformat() or stay.get("check_out") != check_out.isoformat():
         return (
             hotel,
@@ -575,7 +743,15 @@ def normalize_hotel_details(
             ["Tutu get_offer_details: даты ответа не совпадают с запросом — детали не используются"],
             "unknown",
         )
-    if guests and guests.get("adults") not in (None, adults):
+    # PATCH-63G-03: явное расхождение состава — отказ; не указанный в ответе состав не считается подтверждённым.
+    guests = stay.get("guests")
+    if guests is None:
+        guests_ok, guests_confirmed = True, False
+    elif isinstance(guests, dict):
+        guests_ok, guests_confirmed = guests_match(guests, adults, children_ages)
+    else:
+        guests_ok, guests_confirmed = False, False
+    if not guests_ok:
         return (
             hotel,
             [],
@@ -600,11 +776,15 @@ def normalize_hotel_details(
         location=hotel.location.evolve(address=safe_text(info.get("address"), 200) or hotel.location.address),
     )
     rates: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
+    conflicts = 0
     for room in payload.get("rooms") or []:
         if not isinstance(room, dict):
             continue
         for rate in room.get("rates") or []:
             if not isinstance(rate, dict) or rate.get("price_basis") != "stay_total":
+                continue
+            if _rate_guests_conflict(room, rate, adults, children_ages):
+                conflicts += 1
                 continue
             amount = to_money(rate.get("price"))
             currency = (
@@ -616,6 +796,14 @@ def normalize_hotel_details(
                 continue
             rates.append((amount, room, rate))
     notices = [item for item in payload.get("notices") or [] if isinstance(item, dict)]
+    notes: list[str] = []
+    if conflicts:
+        notes.append(f"Tutu get_offer_details: тарифов для другого состава гостей отклонено — {conflicts}")
+    if not guests_confirmed:
+        notes.append(
+            "Tutu get_offer_details: состав гостей в ответе не указан полностью — наличие для вашего состава "
+            "не подтверждено"
+        )
     if not rates:
         no_rooms = any(item.get("kind") == "no_room_offers_for_dates" for item in notices)
         status = "unavailable" if no_rooms else "unknown"
@@ -624,14 +812,29 @@ def normalize_hotel_details(
             if no_rooms
             else "Tutu: детали без оценённых тарифов — наличие не подтверждено"
         )
-        return refined, [], [note], status
+        if conflicts and not no_rooms:
+            note = "Tutu: тарифы на ваш состав гостей не найдены — наличие не подтверждено"
+        return refined, [], [note, *notes], status
     rates.sort(key=lambda item: (item[0], str(item[1].get("room_name"))))
     chosen = [rates[0]]
     with_breakfast = next((item for item in rates if item[2].get("breakfast_included") is True), None)
     if with_breakfast is not None and with_breakfast is not rates[0]:
         chosen.append(with_breakfast)
     offers: list[HotelOffer] = []
-    for index, (amount, room, rate) in enumerate(chosen):
+    seen: set[str] = set()
+    for amount, room, rate in chosen:
+        offer_id = f"TUTU-HD-{hotel.source_hotel_id}-{check_in.isoformat()}-" + hotel_offer_identity(
+            source_hotel_id=hotel.source_hotel_id,
+            check_in=check_in,
+            check_out=check_out,
+            adults=adults,
+            children_ages=children_ages,
+            room=room,
+            rate=rate,
+        )
+        if offer_id in seen:
+            continue
+        seen.add(offer_id)
         breakfast = (
             rate.get("breakfast_included") if isinstance(rate.get("breakfast_included"), bool) else None
         )
@@ -653,7 +856,7 @@ def normalize_hotel_details(
         )
         offers.append(
             HotelOffer(
-                offer_id=f"TUTU-HD-{hotel.source_hotel_id}-{check_in.isoformat()}-{index}",
+                offer_id=offer_id,
                 hotel_id=hotel.hotel_id,
                 check_in=check_in,
                 check_out=check_out,
@@ -667,6 +870,13 @@ def normalize_hotel_details(
                     retrieved_at=retrieved_at,
                     parameters=request_parameters,
                     status="available",
+                )
+                if guests_confirmed
+                else listing_availability(
+                    subject="hotel",
+                    data_mode=data_mode,
+                    retrieved_at=retrieved_at,
+                    parameters=request_parameters,
                 ),
                 source=source,
                 terms=HotelTerms(
@@ -679,10 +889,12 @@ def normalize_hotel_details(
                 ),
                 limitations=[
                     *source.limitations,
-                    "детали тарифа на даты и состав: наличие по данным поставщика, не гарантия брони",
+                    "детали тарифа на даты и состав: наличие по данным поставщика, не гарантия брони"
+                    if guests_confirmed
+                    else "состав гостей в ответе поставщика не указан: наличие для вашего состава не подтверждено",
                     "налоги и сборы не подтверждены (DEC-16)",
                 ],
                 validity=ttl_validity(retrieved_at, ttl_minutes, data_mode),
             )
         )
-    return refined, offers, [], "available"
+    return refined, offers, notes, "available" if guests_confirmed else "unknown"
