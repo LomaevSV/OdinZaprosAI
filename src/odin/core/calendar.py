@@ -348,12 +348,51 @@ def _spread(items: list[date], limit: int) -> list[date]:
     return [items[round(index * (len(items) - 1) / (limit - 1))] for index in range(limit)]
 
 
-def trip_windows(resolution: Resolution, nights: int | None) -> tuple[tuple[date, date], ...]:
+_WEEKDAY_GENITIVE = ("понедельника", "вторника", "среды", "четверга", "пятницы", "субботы", "воскресенья")
+_WEEKDAY_DATIVE = (
+    "понедельникам",
+    "вторникам",
+    "средам",
+    "четвергам",
+    "пятницам",
+    "субботам",
+    "воскресеньям",
+)
+_WEEKDAY_ACCUSATIVE = ("понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье")
+_PREF_FROM = re.compile(_W0 + r"(?:с|со)\s+(" + "|".join(_WEEKDAY_GENITIVE) + r")" + _W1)
+_PREF_EVERY = re.compile(_W0 + r"по\s+(" + "|".join(_WEEKDAY_DATIVE) + r")" + _W1)
+_PREF_ON = re.compile(_W0 + r"(?:в|во)\s+(" + "|".join(_WEEKDAY_ACCUSATIVE) + r")" + _W1)
+
+
+def weekday_preference(text: str, *, accusative: bool = False) -> int | None:
+    """День отъезда, которому пользователь отдаёт предпочтение: «с пятницы», «по пятницам» (и «в пятницу»
+    внутри фразы периода). Несколько разных дней — предпочтения нет."""
+    phrase = " ".join(text.lower().replace("ё", "е").split())
+    found = {_WEEKDAY_GENITIVE.index(m[1]) for m in _PREF_FROM.finditer(phrase)}
+    found |= {_WEEKDAY_DATIVE.index(m[1]) for m in _PREF_EVERY.finditer(phrase)}
+    if accusative:
+        found |= {_WEEKDAY_ACCUSATIVE.index(m[1]) for m in _PREF_ON.finditer(phrase)}
+    return found.pop() if len(found) == 1 else None
+
+
+def weekday_preference_phrase(weekday: int) -> str:
+    return f"с {_WEEKDAY_GENITIVE[weekday]}"
+
+
+def window_option_id(start: date, end: date) -> str:
+    """Канонический идентификатор варианта дат: по нему сервер сверяет выбор пользователя."""
+    return f"dates-{start:%Y%m%d}-{end:%Y%m%d}"
+
+
+def trip_windows(
+    resolution: Resolution, nights: int | None, start_weekday: int | None = None
+) -> tuple[tuple[date, date], ...]:
     """Окна поездки внутри периода: детерминированно, не больше ``MAX_WINDOWS``.
 
     Выходные: без длительности — сб–вс и пт–вс (выбор пользователя, а не допущение); с длительностью N —
-    окна, включающие ночь на воскресенье. Прочие периоды: длительность обязательна; отъезд по пятницам,
-    если их в периоде хотя бы две, иначе равномерно по периоду; возвращение — не позже конца периода."""
+    окна, включающие ночь на воскресенье. Прочие периоды: длительность обязательна; отъезд в предпочтённый
+    день недели («с пятницы»), иначе по пятницам, если их в периоде хотя бы две, иначе равномерно по периоду;
+    возвращение — не позже конца периода."""
     if resolution.status != "period" or resolution.start is None or resolution.end is None:
         return ()
     start, end = resolution.start, resolution.end
@@ -371,8 +410,11 @@ def trip_windows(resolution: Resolution, nights: int | None) -> tuple[tuple[date
         return ()
     last_start = end - timedelta(days=nights)
     starts = [start + timedelta(days=offset) for offset in range((last_start - start).days + 1)]
-    fridays = [day for day in starts if day.weekday() == 4]
-    pool = fridays if len(fridays) >= 2 else starts
+    if start_weekday is not None:
+        pool = [day for day in starts if day.weekday() == start_weekday]
+    else:
+        fridays = [day for day in starts if day.weekday() == 4]
+        pool = fridays if len(fridays) >= 2 else starts
     return tuple((day, day + timedelta(days=nights)) for day in _spread(pool, MAX_WINDOWS))
 
 
@@ -628,6 +670,8 @@ class TripDates:
     windows: tuple[tuple[date, date], ...] = ()
     # Длительность, по которой построены окна (None — окна с разной длительностью или окон нет).
     nights: int | None = None
+    # Предпочтённый день отъезда, учтённый в окнах (0 — понедельник).
+    start_weekday: int | None = None
 
 
 def _windows_text(windows: tuple[tuple[date, date], ...]) -> str:
@@ -642,16 +686,20 @@ def _period_dates(
     resolution: Resolution,
     nights: int | None,
     expressions: tuple[DateExpression, ...],
+    start_weekday: int | None = None,
 ) -> TripDates:
     assert resolution.start is not None and resolution.end is not None
-    windows = trip_windows(resolution, nights)
+    if resolution.period_kind == "weekend":
+        start_weekday = None  # у выходных день отъезда задан самим периодом
+    windows = trip_windows(resolution, nights, start_weekday)
     period = f"{format_day(resolution.start)} – {format_day(resolution.end)}"
+    departure = f" с отъездом в {_WEEKDAY_ACCUSATIVE[start_weekday]}" if start_weekday is not None else ""
     if windows:
         same = {(end - start).days for start, end in windows}
         duration = f" на {nights} {nights_word(nights)}" if nights else ""
         question = (
-            f"«{date_phrase}» — это период ({period}), а не конкретные даты. Варианты поездки{duration}: "
-            f"{_windows_text(windows)}. {_OFFER_NOTE} Выберите вариант или назовите свои даты."
+            f"«{date_phrase}» — это период ({period}), а не конкретные даты. Варианты поездки{duration}"
+            f"{departure}: {_windows_text(windows)}. {_OFFER_NOTE} Выберите вариант или назовите свои даты."
         )
         return TripDates(
             "period",
@@ -662,6 +710,7 @@ def _period_dates(
             resolution.rule,
             windows=windows,
             nights=nights if len(same) == 1 and nights else None,
+            start_weekday=start_weekday,
         )
     if nights is None:
         question = (
@@ -670,10 +719,19 @@ def _period_dates(
         )
     else:
         question = (
-            f"В период «{date_phrase}» ({period}) не помещается поездка на {nights} {nights_word(nights)}. "
-            "Назовите другие даты, длительность или год."
+            f"В период «{date_phrase}» ({period}) не помещается поездка на {nights} {nights_word(nights)}"
+            f"{departure}. Назовите другие даты, длительность или год."
         )
-    return TripDates("period", None, None, expressions, question, resolution.rule, nights=nights)
+    return TripDates(
+        "period",
+        None,
+        None,
+        expressions,
+        question,
+        resolution.rule,
+        nights=nights,
+        start_weekday=start_weekday,
+    )
 
 
 def resolve_trip_dates(
@@ -684,6 +742,7 @@ def resolve_trip_dates(
     *,
     known_nights: int | None = None,
     bare_count: bool = False,
+    start_weekday: int | None = None,
 ) -> TripDates:
     """Даты отъезда и возвращения: календарь + длительность. LLM даёт только фразы, даты считает код.
 
@@ -711,7 +770,9 @@ def resolve_trip_dates(
     if resolution.status == "period":
         if nights_question:
             return TripDates("period", None, None, expressions, nights_question, nights_rule)
-        return _period_dates(date_phrase, resolution, duration, expressions)
+        if start_weekday is None:
+            start_weekday = weekday_preference(date_phrase, accusative=True)
+        return _period_dates(date_phrase, resolution, duration, expressions, start_weekday)
     if resolution.status == "ambiguous":
         windows = tuple(
             (start, end if end is not None else start + timedelta(days=duration))

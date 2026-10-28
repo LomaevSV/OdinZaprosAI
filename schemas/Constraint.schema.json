@@ -21,7 +21,8 @@
         "pets",
         "hotel_breakfast",
         "hotel_stars_min",
-        "hotel_free_cancellation"
+        "hotel_free_cancellation",
+        "hotel_room_type"
       ],
       "title": "Field",
       "type": "string"

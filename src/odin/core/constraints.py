@@ -140,6 +140,11 @@ def _check_stars(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluat
     return _result(constraint, facts, "violated", f"категория {facts.star_rating}★ ниже требуемой")
 
 
+def _check_room_type(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluation:
+    """INT-007: тип номера источники не передают — пожелание всегда «не подтверждено», а не «выполнено»."""
+    return _result(constraint, facts, "unknown", "семейный номер: источник не подтвердил тип номера")
+
+
 _EVALUATORS: dict[str, Callable[[Constraint, OfferFacts], ConstraintEvaluation]] = {
     "budget_total": _check_budget,
     "transport_mode": _check_transport_mode,
@@ -147,6 +152,7 @@ _EVALUATORS: dict[str, Callable[[Constraint, OfferFacts], ConstraintEvaluation]]
     "hotel_breakfast": _check_breakfast,
     "hotel_stars_min": _check_stars,
     "hotel_free_cancellation": _check_free_cancellation,
+    "hotel_room_type": _check_room_type,
 }
 
 # Область условия → роли компонентов. Бюджет поездки проверяется у каждого компонента (известная часть),

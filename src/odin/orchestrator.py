@@ -34,9 +34,10 @@ from odin.contracts import (
     TripRequest,
     TripState,
 )
-from odin.contracts.api import StructuredForm
+from odin.contracts.api import ChoiceAnswer, StructuredForm
 from odin.contracts.common import Deviation
 from odin.contracts.plan import CartItem
+from odin.core import calendar
 from odin.core.cart import CartError, CartStaleError, build_cart, confirm_cart, decline_cart
 from odin.core.clarify import detect_changes, merge_answer
 from odin.core.constraints import (
@@ -59,6 +60,7 @@ from odin.core.trip import (
 from odin.llm.composer import ComposerFacts, check_rewrite, facts_payload, money_text, safe_answer
 from odin.llm.free_text import (
     INTERPRETER_SCHEMA_VERSION,
+    InterpretationDelta,
     awaiting_fields,
     outcome_from_delta,
     parse_delta,
@@ -168,6 +170,8 @@ def _constraint_label(constraint: Any, currency: str | None = None, *, mark_requ
         label = "бесплатная отмена" if value else "без требования бесплатной отмены"
     elif field_name == "pets":
         label = "размещение и проезд с животным"
+    elif field_name == "hotel_room_type":
+        label = "семейный номер (пожелание)"
     else:
         label = str(field_name)
     return label + (" (обязательно)" if mark_required and constraint.requiredness == "required" else "")
@@ -448,6 +452,7 @@ class Orchestrator:
         trip_revision: int,
         text: str | None = None,
         form: StructuredForm | None = None,
+        choice: ChoiceAnswer | None = None,
     ) -> TurnResult:
         session = self.storage.get_session(session_id)
         trip_id = session["trip_id"]
@@ -458,7 +463,8 @@ class Orchestrator:
         ):
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
-            self._start_turn(session_id, request_id, trip_id, llm_allowed=form is None)
+            # Ход из формы и выбор варианта нажатием обрабатываются без LLM (UI-003, DATE-003).
+            self._start_turn(session_id, request_id, trip_id, llm_allowed=form is None and choice is None)
             started = time.perf_counter()
             try:
                 return self._handle_message_body(
@@ -468,6 +474,7 @@ class Orchestrator:
                     trip_id=trip_id,
                     text=text,
                     form=form,
+                    choice=choice,
                 )
             except Exception as exc:
                 self._turn_failed(session_id, request_id, trip_id, exc, started)
@@ -510,10 +517,16 @@ class Orchestrator:
         trip_id: str,
         text: str | None,
         form: StructuredForm | None,
+        choice: ChoiceAnswer | None = None,
     ) -> TurnResult:
-        outcome = self._interpret(
-            session_id=session_id, request_id=request_id, text=text, form=form, previous=current
-        )
+        if choice is not None:
+            outcome = self._interpret_choice(
+                session_id=session_id, request_id=request_id, choice=choice, previous=current
+            )
+        else:
+            outcome = self._interpret(
+                session_id=session_id, request_id=request_id, text=text, form=form, previous=current
+            )
         # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
         has_plan = current.plan is not None and bool(current.plan.components)
         input_mode = INPUT_MODES.get(outcome.mode, "structured_form")
@@ -688,6 +701,53 @@ class Orchestrator:
                 session_id=session_id, request_id=request_id, text=text, previous=previous
             )
         return refuse_free_text(session_id=session_id, request_id=request_id)
+
+    def _interpret_choice(
+        self, *, session_id: str, request_id: str, choice: ChoiceAnswer, previous: TripState
+    ) -> InterpretationOutcome:
+        """DATE-003: выбранный нажатием вариант дат. Остальные условия и незакрытые уточнения сохраняются.
+
+        Вариант сверяется с уточнением в текущей ревизии поездки. Если уточнение не записано (при собранном
+        плане неудачная пересборка не пишется, REPLAN-02), принимается только вариант с каноническим
+        идентификатором выбранных дат — это явный выбор пользователя, как ввод дат в форме."""
+        request = previous.request
+        if request is None:
+            raise ConflictError("вариант дат больше не актуален: условия поездки изменились")
+        target = next(
+            (item for item in request.ambiguities if item.ambiguity_id == choice.ambiguity_id), None
+        )
+        dates = (choice.date_from, choice.date_to)
+        if target is not None:
+            option = next((item for item in target.options if item.option_id == choice.option_id), None)
+            if option is None or (option.date_from, option.date_to) != dates:
+                raise ConflictError("вариант дат больше не актуален: обновите поездку и выберите снова")
+        else:
+            has_plan = previous.plan is not None and bool(previous.plan.components)
+            current = (request.date_range.start, request.date_range.end) if request.date_range else None
+            if not has_plan or choice.option_id != calendar.window_option_id(*dates):
+                raise ConflictError("вариант дат больше не актуален: обновите поездку и выберите снова")
+            if current == dates:
+                raise ConflictError("эти даты уже выбраны")
+        label = f"Выбраны даты: {calendar.format_window(*dates)}"
+        base = request_to_form(request).evolve(date_from=choice.date_from, date_to=choice.date_to)
+        if request.input_mode == "structured_form":
+            return interpret_structured_form(
+                base, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
+        remaining = [item for item in request.ambiguities if item.ambiguity_id != choice.ambiguity_id]
+        return outcome_from_delta(
+            InterpretationDelta(),
+            text=label,
+            base=base,
+            session_id=session_id,
+            request_id=request_id,
+            reference_datetime=datetime.now(tz=UTC),
+            mode=request.input_mode,
+            previous_constraints=list(request.constraints),
+            timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
+            previous_ambiguities=remaining,
+            previous_date_expressions=list(request.date_expressions),
+        )
 
     def _interpret_text(
         self, *, session_id: str, request_id: str, text: str, previous: TripState | None

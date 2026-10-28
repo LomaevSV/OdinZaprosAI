@@ -82,7 +82,7 @@ REPLAN_TABLE: tuple[ReplanRule, ...] = (
     ),
     ReplanRule(
         group="preferences",
-        fields=("breakfast", "stars_min", "free_cancellation", "wishes_tags"),
+        fields=("breakfast", "stars_min", "free_cancellation", "room_type", "wishes_tags"),
         invalidates=(),
         reason="предпочтения оцениваются на уже найденных офферах",
     ),

@@ -255,6 +255,18 @@ def dialog(tmp_path: Path) -> Iterator[tuple[Any, Any]]:
             "dates": {"date_phrase": "с 10 по 13 ноября"},
         },
         "останемся на четыре": {"dates": {"nights_phrase": "на четыре"}},
+        "Из Москвы в Казань в ноябре на 3 ночи вдвоём с ребёнком": {
+            **TRIP,
+            "dates": {"date_phrase": "в ноябре", "nights_phrase": "на 3 ночи"},
+            "children_count": {"value": 1, "span": "с ребёнком"},
+        },
+        "перенесём на ноябрь": {"dates": {"date_phrase": "на ноябрь"}},
+        "Из Москвы в Казань с 10 по 13 ноября вдвоём, желательно семейный номер": {
+            **TRIP,
+            "dates": {"date_phrase": "с 10 по 13 ноября"},
+            "unparsed": ["желательно семейный номер"],
+        },
+        "лучше с завтраком": {"breakfast": {"value": True, "required": False, "span": "с завтраком"}},
         "Хочу на море из Москвы с 10 по 13 ноября вдвоём": {
             "origin": {"value": "Москва", "span": "из Москвы"},
             "dates": {"date_phrase": "с 10 по 13 ноября"},
@@ -334,3 +346,180 @@ def test_destination_choice_keeps_trip_and_does_not_call_llm(dialog: tuple[Any, 
         },
     )
     assert stale.status_code == 409, "повторный клик по устаревшей ревизии отклоняется, а не применяется"
+
+
+# ---------------------------------------------------------------- DATE-003: варианты дат — кнопки
+
+
+def test_period_question_carries_clickable_options_with_weekday_preference() -> None:
+    outcome = _turn(
+        "Из Москвы в Казань в ноябре на 3 ночи с субботы вдвоём",
+        {**TRIP, "dates": {"date_phrase": "в ноябре", "nights_phrase": "на 3 ночи"}},
+    )
+    [question] = [q for q in outcome.questions if q.ambiguity_id == DATES_PERIOD_PENDING_ID]
+    assert 1 <= len(question.options) <= 4
+    assert all(option.date_from.weekday() == 5 for option in question.options), "отъезд в субботу"
+    assert all((option.date_to - option.date_from).days == 3 for option in question.options)
+    assert all(
+        date(2026, 11, 1) <= option.date_from and option.date_to <= date(2026, 11, 30)
+        for option in question.options
+    )
+    assert question.options[0].option_id == "dates-20261107-20261110"
+    assert "с отъездом в субботу" in question.question
+    later = _turn("на 4 ночи", {"dates": {"nights_phrase": "на 4 ночи"}}, outcome)
+    [again] = [q for q in later.questions if q.ambiguity_id == DATES_PERIOD_PENDING_ID]
+    assert again.options and all(
+        o.date_from.weekday() == 5 and (o.date_to - o.date_from).days == 4 for o in again.options
+    )
+
+
+def _choice(question: dict[str, Any], index: int = 0) -> dict[str, Any]:
+    option = question["options"][index]
+    return {
+        "choice": {
+            "ambiguity_id": question["ambiguity_id"],
+            "option_id": option["option_id"],
+            "date_from": option["date_from"],
+            "date_to": option["date_to"],
+        }
+    }
+
+
+def _period_question(turn: dict[str, Any]) -> dict[str, Any]:
+    return next(q for q in turn["questions"] if q["ambiguity_id"] == DATES_PERIOD_PENDING_ID)
+
+
+def test_choosing_dates_keeps_conditions_and_pending_questions_without_llm(dialog: tuple[Any, Any]) -> None:
+    client, fake = dialog
+    session = client.post("/api/v1/sessions").json()
+    first = _say(
+        client,
+        session,
+        {"text": "Из Москвы в Казань в ноябре на 3 ночи вдвоём с ребёнком"},
+        session["trip_revision"],
+        1,
+    )
+    question = _period_question(first)
+    assert len(question["options"]) == 4 and first["state"]["request"]["date_range"] is None
+    calls = len(fake.requests)
+
+    wrong = _choice(question)
+    wrong["choice"]["date_to"] = "2026-11-12"
+    rejected = client.post(
+        f"/api/v1/sessions/{session['session_id']}/messages",
+        json={"request_id": "req-stage59-0101", "trip_revision": first["trip_revision"], **wrong},
+    )
+    assert rejected.status_code == 409, "подменённые даты варианта не принимаются"
+
+    chosen = _say(client, session, _choice(question, 1), first["trip_revision"], 2)
+    assert chosen["input_mode"] == "choice"
+    request = chosen["state"]["request"]
+    option = question["options"][1]
+    assert (
+        request["date_range"]["start"] == option["date_from"]
+        and request["date_range"]["end"] == option["date_to"]
+    )
+    assert request["origin"]["name"] == "Москва" and request["destination"]["name"] == "Казань"
+    assert request["party"]["adults"] == 2
+    ids = {q["ambiguity_id"] for q in chosen["questions"]}
+    assert DATES_PERIOD_PENDING_ID not in ids and "amb-llm-children" in ids, (
+        "вопрос о возрасте ребёнка не потерян"
+    )
+    assert len(fake.requests) == calls, "выбор нажатием не вызывает LLM"
+
+    stale = client.post(
+        f"/api/v1/sessions/{session['session_id']}/messages",
+        json={
+            "request_id": "req-stage59-0103",
+            "trip_revision": first["trip_revision"],
+            **_choice(question, 2),
+        },
+    )
+    assert stale.status_code == 409, "выбор по устаревшей ревизии отклоняется"
+
+
+def test_choosing_dates_for_existing_plan_replans(dialog: tuple[Any, Any]) -> None:
+    client, fake = dialog
+    session = client.post("/api/v1/sessions").json()
+    first = _say(
+        client, session, {"text": "Из Москвы в Казань с 10 по 13 ноября вдвоём"}, session["trip_revision"], 1
+    )
+    moved = _say(client, session, {"text": "перенесём на ноябрь"}, first["trip_revision"], 2)
+    assert moved["trip_revision"] == first["trip_revision"], "неудачная пересборка не записана (REPLAN-02)"
+    question = _period_question(moved)
+    option = next(o for o in question["options"] if o["date_from"] != "2026-11-10")
+    calls = len(fake.requests)
+    index = question["options"].index(option)
+    replanned = _say(client, session, _choice(question, index), moved["trip_revision"], 3)
+    request = replanned["state"]["request"]
+    assert (request["date_range"]["start"], request["date_range"]["end"]) == (
+        option["date_from"],
+        option["date_to"],
+    )
+    assert replanned["state"]["plan"]["components"] and request["party"]["adults"] == 2
+    assert len(fake.requests) == calls
+    again = client.post(
+        f"/api/v1/sessions/{session['session_id']}/messages",
+        json={
+            "request_id": "req-stage59-0204",
+            "trip_revision": replanned["trip_revision"],
+            **_choice(question, index),
+        },
+    )
+    assert again.status_code == 409, "повторный выбор тех же дат не пересобирает план"
+
+
+def test_choice_request_is_validated() -> None:
+    from pydantic import ValidationError
+
+    from odin.contracts.api import MessageRequest
+
+    choice = {"ambiguity_id": "a", "option_id": "o", "date_from": "2026-11-06", "date_to": "2026-11-09"}
+    assert MessageRequest.model_validate({"request_id": "req-12345678", "trip_revision": 1, "choice": choice})
+    with pytest.raises(ValidationError):
+        MessageRequest.model_validate(
+            {"request_id": "req-12345678", "trip_revision": 1, "choice": choice, "text": "x"}
+        )
+    with pytest.raises(ValidationError):
+        MessageRequest.model_validate(
+            {"request_id": "req-12345678", "trip_revision": 1, "choice": {**choice, "date_to": "2026-11-06"}}
+        )
+
+
+# ---------------------------------------------------------------- INT-007: пожелание сохраняется между ходами
+
+
+@pytest.mark.req("INT-007")
+def test_family_room_preference_persists_and_is_never_confirmed(dialog: tuple[Any, Any]) -> None:
+    client, _fake = dialog
+    session = client.post("/api/v1/sessions").json()
+    text = "Из Москвы в Казань с 10 по 13 ноября вдвоём, желательно семейный номер"
+    first = _say(client, session, {"text": text}, session["trip_revision"], 1)
+    second = _say(client, session, {"text": "лучше с завтраком"}, first["trip_revision"], 2)
+    for turn in (first, second):
+        [constraint] = [c for c in turn["state"]["request"]["constraints"] if c["field"] == "hotel_room_type"]
+        assert constraint["requiredness"] == "preferred" and constraint["value"] == "family"
+        assert constraint["source_kind"] == "text_span" and "семейный номер" in constraint["source_span"]
+        statuses = {
+            e["status"]
+            for e in turn["state"]["constraint_evaluations"]
+            if e["constraint_id"] == constraint["constraint_id"]
+        }
+        assert statuses and statuses <= {"unknown", "not_applicable"}, (
+            "семейный номер не объявлен подтверждённым"
+        )
+    assert "Не удалось однозначно учесть" not in first["assistant_text"]
+    revoked = _turn(
+        "семейный номер не нужен",
+        {"unparsed": ["семейный номер не нужен"]},
+        _turn(
+            text,
+            {
+                **TRIP,
+                "dates": {"date_phrase": "с 10 по 13 ноября"},
+                "unparsed": ["желательно семейный номер"],
+            },
+        ),
+    )
+    assert revoked.request is not None
+    assert not [c for c in revoked.request.constraints if c.field == "hotel_room_type"]

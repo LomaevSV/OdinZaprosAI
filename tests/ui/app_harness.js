@@ -247,6 +247,30 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     return;
   }
 
+  if (process.env.HARNESS_MODE === "dates") {
+    // DATE-003: варианты дат — кнопки; выбор без LLM сохраняет прочие условия, двойной клик — один запрос.
+    const optionButtons = () => byTestid(byId.questions, "question-option");
+    byId["text-input"].value = process.env.HARNESS_TEXT;
+    await byId["text-form"].dispatch("submit");
+    await until(() => optionButtons().length > 0 && byId.progress.hidden, "date options");
+    out.options = optionButtons().map((b) => ({ id: b.getAttribute("data-option-id"), label: b.textContent, title: b.title }));
+    out.options_group_label = findAll(byId.questions, (n) => n.getAttribute && n.getAttribute("role") === "group").map((n) => n.getAttribute("aria-label"));
+    const button = optionButtons()[1];
+    const posts = count("POST", "/messages");
+    await Promise.all([button.dispatch("click"), button.dispatch("click")]);
+    await until(() => count("POST", "/messages") > posts && byId.progress.hidden && state_request() && state_request().date_range, "dates chosen");
+    out.choice_posts = count("POST", "/messages") - posts;
+    out.choice_body = requests.filter((r) => r.method === "POST" && r.path.endsWith("/messages")).slice(-1)[0].body;
+    const request = state_request();
+    out.after_choice = { origin: request.origin.name, destination: request.destination.name, adults: request.party.adults, dates: request.date_range };
+    out.options_after = optionButtons().length;
+    out.offer_cards_after = selectableCards().length;
+    out.choice_user_message = messages().find((m) => m.startsWith("Выбираю даты:"));
+    out.visible_text = visibleText();
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
   if (process.env.HARNESS_MODE === "inspiration") {
     // CITY-001: предложенное направление выбирается нажатием/клавиатурой; «откуда» и прочие условия не теряются.
     const today = new Date();

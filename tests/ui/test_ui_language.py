@@ -108,3 +108,21 @@ def test_rendered_interface_is_russian(tmp_path: Path) -> None:
         "Предложенные направления" in text for text in observed
     )
     assert english_words(observed) == []
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js недоступен: UI-стенд не запускается")
+def test_date_option_buttons_are_russian(tmp_path: Path) -> None:
+    from tests.llm_fakes import ScriptedLlm
+    from tests.ui.test_browser_handlers import FAKE_LLM_ENV
+
+    text = "Из Москвы в Казань в ноябре на 3 ночи вдвоём"
+    delta = {
+        "origin": {"value": "Москва", "span": "Из Москвы"},
+        "destination": {"value": "Казань", "span": "в Казань"},
+        "dates": {"date_phrase": "в ноябре", "nights_phrase": "на 3 ночи"},
+        "adults": {"value": 2, "span": "вдвоём"},
+    }
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=ScriptedLlm({text: delta})):
+        result = _run(base, "dates", HARNESS_TEXT=text)
+    texts = [*(o["label"] for o in result["options"]), *(o["title"] for o in result["options"])]
+    assert english_words([*texts, *result["options_group_label"], *result["visible_text"]]) == []

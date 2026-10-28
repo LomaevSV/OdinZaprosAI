@@ -77,6 +77,7 @@ def _constraints(form: StructuredForm) -> list[Constraint]:
                     "hotel_breakfast": "hotel",
                     "hotel_stars_min": "hotel",
                     "hotel_free_cancellation": "hotel",
+                    "hotel_room_type": "hotel",
                 }[field_name],  # type: ignore[arg-type]
                 confidence=None,
                 ambiguity=None,
@@ -95,6 +96,8 @@ def _constraints(form: StructuredForm) -> list[Constraint]:
         add("hotel_stars_min", "gte", form.stars_min, "stars")
     if form.free_cancellation is not None:
         add("hotel_free_cancellation", "eq", form.free_cancellation, "free_cancellation")
+    if form.room_type is not None:
+        add("hotel_room_type", "eq", form.room_type, "room_type")  # всегда мягкое пожелание (INT-007)
     return result
 
 
@@ -216,6 +219,7 @@ def request_to_form(request: TripRequest) -> StructuredForm:
             by_field["hotel_free_cancellation"].value if "hotel_free_cancellation" in by_field else None
         ),
         free_cancellation_required=required("hotel_free_cancellation"),
+        room_type=by_field["hotel_room_type"].value if "hotel_room_type" in by_field else None,
         wishes_tags=list(request.wishes_tags),
     )
 

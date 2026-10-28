@@ -80,7 +80,7 @@ const STOP_REASONS = {
   user_stopped: "остановлен пользователем",
   blocked_by_decision: "источник не разрешён к использованию",
 };
-const FIELD_LABELS = { budget_total: "бюджет", transport_mode: "вид транспорта", pets: "животные", hotel_breakfast: "завтрак", hotel_stars_min: "звёздность", hotel_free_cancellation: "бесплатная отмена" };
+const FIELD_LABELS = { budget_total: "бюджет", transport_mode: "вид транспорта", pets: "животные", hotel_breakfast: "завтрак", hotel_stars_min: "звёздность", hotel_free_cancellation: "бесплатная отмена", hotel_room_type: "семейный номер (пожелание)" };
 const ROLE_LABELS = { outbound: "туда", return: "обратно", hotel: "гостиница", transfer_in: "трансфер к гостинице", transfer_out: "трансфер от гостиницы" };
 const COLUMN_TITLES = { outbound: "Транспорт туда", hotel: "Гостиницы", return: "Транспорт обратно" };
 
@@ -377,10 +377,53 @@ function resetCart() {
   $("cart").replaceChildren();
 }
 
+// DATE-003: предложенные варианты дат — кнопки. Это предложения, а не бронь: цены и наличие — после выбора.
+let optionButtons = [];
+
 function renderQuestions(questions) {
   const box = $("questions");
   box.replaceChildren();
-  for (const question of questions || []) box.append(el("div", { class: "msg assistant" }, `Вопрос: ${question.question}`));
+  optionButtons = [];
+  for (const question of questions || []) {
+    const item = el("div", { class: "msg assistant", "data-testid": "question" }, `Вопрос: ${question.question}`);
+    const options = question.options || [];
+    if (options.length) {
+      const group = el("div", { class: "question-options", role: "group", "aria-label": "Варианты дат поездки" });
+      for (const option of options) {
+        const button = el("button", { type: "button", class: "option", "data-testid": "question-option", "data-option-id": option.option_id }, option.label);
+        button.title = "Выбрать эти даты (предложение, не бронирование)";
+        button.addEventListener("click", () => chooseDates(question, option));
+        optionButtons.push(button);
+        group.append(button);
+      }
+      item.append(group);
+    }
+    box.append(item);
+  }
+}
+
+function setOptionsDisabled(disabled) {
+  for (const button of optionButtons) button.disabled = disabled;
+}
+
+// Выбор варианта дат: ход без LLM; сервер сверяет вариант с текущей ревизией и сохраняет прочие условия.
+async function chooseDates(question, option) {
+  if (!state.trip || state.busy) return;
+  const range = state.trip.request && state.trip.request.date_range;
+  if (range && range.start === option.date_from && range.end === option.date_to) {
+    say("assistant", `Даты ${option.label} уже выбраны.`);
+    return;
+  }
+  state.busy = true;
+  setOptionsDisabled(true);
+  try {
+    say("user", `Выбираю даты: ${option.label}`);
+    const turn = await sendMessage({ choice: { ambiguity_id: question.ambiguity_id, option_id: option.option_id, date_from: option.date_from, date_to: option.date_to } });
+    if (turn) resetCart();
+  } finally {
+    state.busy = false;
+    setOptionsDisabled(false);
+  }
 }
 
 // CART-UI-002/003: корзина в логике путешествия; трансферы — отдельные секции «туда» и «обратно».
@@ -501,6 +544,7 @@ function formPayload(form) {
   if (data.get("breakfast") === "on") payload.breakfast = true;
   if (value("stars_min")) payload.stars_min = Number(value("stars_min"));
   if (data.get("pet") === "on") payload.pets = [{ kind: "dog", count: 1 }];
+  if (data.get("room_family") === "on") payload.room_type = "family";
   return payload;
 }
 
@@ -529,6 +573,7 @@ function requestFormValues(request) {
     breakfast_required: required("hotel_breakfast"),
     stars_min: by.hotel_stars_min ? String(by.hotel_stars_min.value) : "",
     pet: (party.pets || []).length > 0,
+    room_family: Boolean(by.hotel_room_type && by.hotel_room_type.value === "family"),
     wishes_tags: (request.wishes_tags || []).join(", "),
   };
 }

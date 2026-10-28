@@ -40,6 +40,8 @@ class StructuredForm(Contract):
     stars_required: bool = False
     free_cancellation: bool | None = None
     free_cancellation_required: bool = False
+    # INT-007: мягкое пожелание к типу номера (не фильтр).
+    room_type: Literal["family"] | None = None
     wishes_tags: list[str] = Field(default_factory=list, max_length=6)
 
     @model_validator(mode="after")
@@ -51,16 +53,35 @@ class StructuredForm(Contract):
         return self
 
 
+class ChoiceAnswer(Contract):
+    """Выбор предложенного варианта нажатием (DATE-003). Сервер сверяет вариант с состоянием поездки."""
+
+    ambiguity_id: str = Field(min_length=1, max_length=64)
+    option_id: str = Field(min_length=1, max_length=64)
+    date_from: date
+    date_to: date
+
+    @model_validator(mode="after")
+    def _order(self) -> ChoiceAnswer:
+        if self.date_to <= self.date_from:
+            raise ValueError("дата возвращения должна быть позже даты отъезда")
+        return self
+
+
 class MessageRequest(Contract):
     request_id: RequestId = Field(min_length=8, max_length=64)
     trip_revision: int = Field(ge=0)
     text: str | None = Field(default=None, max_length=4000)
     form: StructuredForm | None = None
+    choice: ChoiceAnswer | None = None
 
     @model_validator(mode="after")
     def _one(self) -> MessageRequest:
-        if self.form is None and not (self.text and self.text.strip()):
-            raise ValueError("нужен текст сообщения или структурированная форма")
+        given = [self.form is not None, bool(self.text and self.text.strip()), self.choice is not None]
+        if not any(given):
+            raise ValueError("нужен текст сообщения, структурированная форма или выбор варианта")
+        if self.choice is not None and sum(given) > 1:
+            raise ValueError("выбор варианта передаётся без текста и формы")
         return self
 
 
@@ -82,7 +103,7 @@ class TurnResponse(Contract):
     trip_id: str
     trip_revision: int
     status: TripStatus
-    input_mode: Literal["structured_form", "free_text_llm", "free_text_replay", "llm_unavailable"]
+    input_mode: Literal["structured_form", "free_text_llm", "free_text_replay", "llm_unavailable", "choice"]
     assistant_text: str
     questions: list[Ambiguity] = Field(default_factory=list)
     state: TripState

@@ -23,7 +23,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from odin.contracts import TripRequest
 from odin.contracts.api import StructuredForm
-from odin.contracts.trip import Ambiguity, Constraint, ConstraintGroup, DateExpression, PetInfo
+from odin.contracts.trip import (
+    Ambiguity,
+    AmbiguityOption,
+    Constraint,
+    ConstraintGroup,
+    DateExpression,
+    PetInfo,
+)
 from odin.core import calendar
 from odin.llm.interpreter import InterpretationOutcome, interpret_structured_form
 from odin.tools.mock_data import DEMO_CATALOG, normalize_city
@@ -540,6 +547,8 @@ class DeltaReport:
     notes: list[str] = field(default_factory=list)
     # Длительность названа раньше даты отъезда («на 3 ночи»): хранится до появления даты (UC-02).
     pending_nights: str | None = None
+    # Цитаты условий, распознанных кодом без отдельного поля дельты (INT-007: тип номера).
+    spans: dict[str, str] = field(default_factory=dict)
 
 
 # Уточнения, которые переносятся между ходами через ``TripRequest.ambiguities`` (UC-02: полученное не теряется).
@@ -591,6 +600,7 @@ def _question(
     span: str | None,
     blocking: str = "blocking_now",
     ambiguity_id: str | None = None,
+    options: list[AmbiguityOption] | None = None,
 ) -> Ambiguity:
     return Ambiguity(
         ambiguity_id=ambiguity_id or f"amb-llm-{field_name}",
@@ -598,7 +608,21 @@ def _question(
         question=text,
         blocking_class=blocking,  # type: ignore[arg-type]
         source_span=span,
+        options=options or [],
     )
+
+
+def _date_options(windows: tuple[tuple[Any, Any], ...]) -> list[AmbiguityOption]:
+    """DATE-003: предложенные окна поездки — кнопки выбора (не больше четырёх); это не бронь."""
+    return [
+        AmbiguityOption(
+            option_id=calendar.window_option_id(start, end),
+            label=calendar.format_window(start, end),
+            date_from=start,
+            date_to=end,
+        )
+        for start, end in windows[: calendar.MAX_WINDOWS]
+    ]
 
 
 def _children_question(span: str | None) -> Ambiguity:
@@ -824,13 +848,18 @@ def apply_delta(
         carried_nights=pending_nights,
         known_nights=known_nights,
         bare_count=bare_count,
+        start_weekday=calendar.weekday_preference(text),
     )
     new_phrase = dates is not None and bool(dates.date_phrase)
     if pending_dates is not None and not new_phrase and values.get("date_from") is None:
         # DEC-34: фраза прошлого хода («завтра») разрешается, когда стал известен пункт отправления,
         # от исходной опорной даты; без пояса вопрос повторяется. DATE-002/DATE-003: так же ждут длительность
         # дата отъезда без возвращения и период («в ноябре»).
-        phrase, original_reference, _kind, embedded_nights = pending_dates
+        phrase, original_reference, _kind, embedded = pending_dates
+        weekday = calendar.weekday_preference(text)
+        if weekday is None and embedded:
+            weekday = calendar.weekday_preference(embedded)
+        embedded_nights = embedded if embedded and calendar.inline_nights(embedded) else None
         _resolve_dates(
             phrase,
             report.pending_nights or pending_nights or embedded_nights,
@@ -838,6 +867,7 @@ def apply_delta(
             reference=original_reference or reference_datetime,
             report=report,
             resolver=timezone_for,
+            start_weekday=weekday,
         )
         if values.get("date_to") is not None:
             report.pending_nights = pending_nights = None
@@ -856,11 +886,22 @@ def apply_delta(
             continue  # фрагмент о детях стал вопросом о возрасте, о длительности — длительностью
         if _absorbed(fragment):
             continue
-        if span_in_text(fragment, text) and _soft_room_preference(fragment):
+        room = _room_preference(fragment) if span_in_text(fragment, text) else None
+        if room == "soft":
+            # INT-007: мягкое пожелание сохраняется в условиях поездки и переносится между ходами.
+            values["room_type"] = "family"
+            report.accepted.append("room_type")
+            report.spans["hotel_room_type"] = fragment.strip()[:300]
             report.notes.append(
-                f"Пожелание «{fragment.strip()[:120]}» принято как мягкое предпочтение: варианты по нему "
+                f"Пожелание «{fragment.strip()[:120]}» сохранено как мягкое предпочтение: варианты по нему "
                 "не отсеиваются, тип номера источником не подтверждён"
             )
+            continue
+        if room == "revoke":
+            if values.get("room_type") is not None:
+                values["room_type"] = None
+                report.accepted.append("clear:room_type")
+                report.notes.append("Пожелание о семейном номере снято")
             continue
         if span_in_text(fragment, text) and fragment not in report.unparsed:
             report.unparsed.append(fragment.strip()[:300])
@@ -938,14 +979,26 @@ _FAMILY_ROOM_RE = re.compile(
 )
 
 
-def _soft_room_preference(fragment: str) -> bool:
-    """INT-007: «желательно семейный номер» — мягкое пожелание; обязательное требование так не учитывается
-    (проверить его по источнику нельзя) и остаётся в «не удалось учесть»."""
+_ROOM_REVOKE_RE = re.compile(
+    _WORD_START
+    + r"(?:не\s+(?:нуж(?:ен|на|но|ны)|обязател\w*|важ\w*)|необязател\w*|неважн\w*|без\s+семейн\w*|"
+    r"любой\s+номер|все\s+равно)" + _WORD_END
+)
+
+
+def _room_preference(fragment: str) -> str | None:
+    """INT-007: «желательно семейный номер» — мягкое пожелание ("soft"); «семейный номер не нужен» — отмена
+    ("revoke"). Обязательное требование так не учитывается (проверить его по источнику нельзя) и остаётся
+    в «не удалось учесть»."""
     text = _norm(fragment)
+    if not _FAMILY_ROOM_RE.search(text):
+        return None
+    if _ROOM_REVOKE_RE.search(text):
+        return "revoke"
     required = _MANDATORY_RE.search(text) or re.search(
         _WORD_START + r"(?:нуж(?:ен|на|но|ны)|требуется)", text
     )
-    return bool(_FAMILY_ROOM_RE.search(text)) and not required
+    return None if required else "soft"
 
 
 def _answer_return_date(
@@ -979,6 +1032,7 @@ def _apply_dates(
     carried_nights: str | None = None,
     known_nights: int | None = None,
     bare_count: bool = False,
+    start_weekday: int | None = None,
 ) -> None:
     if dates is None or not dates.date_phrase:
         if dates is not None and dates.nights_phrase:
@@ -1021,6 +1075,7 @@ def _apply_dates(
         resolver=resolver,
         known_nights=known_nights,
         bare_count=bare_count,
+        start_weekday=start_weekday,
     )
 
 
@@ -1034,6 +1089,7 @@ def _resolve_dates(
     resolver: Callable[[str], str | None] | None,
     known_nights: int | None = None,
     bare_count: bool = False,
+    start_weekday: int | None = None,
 ) -> None:
     timezone_name = _timezone_for(values, resolver)
     resolved = calendar.resolve_trip_dates(
@@ -1043,6 +1099,7 @@ def _resolve_dates(
         timezone_name,
         known_nights=known_nights,
         bare_count=bare_count,
+        start_weekday=start_weekday,
     )
     report.date_expressions.extend(resolved.expressions)
     if resolved.status == "resolved":
@@ -1069,10 +1126,19 @@ def _resolve_dates(
         # или длительности — следующим ходом. Длительность сохраняется вместе с фразой периода.
         values["date_from"] = values["date_to"] = None
         span = date_phrase.strip()
+        # Длительность и день отъезда хранятся вместе с фразой периода до выбора варианта.
         if resolved.nights:
             span = f"{span} {calendar.nights_phrase(resolved.nights)}"
+        if resolved.start_weekday is not None:
+            span = f"{span} {calendar.weekday_preference_phrase(resolved.start_weekday)}"
         report.questions.append(
-            _question("date_from", resolved.question or "", span, ambiguity_id=DATES_PERIOD_PENDING_ID)
+            _question(
+                "date_from",
+                resolved.question or "",
+                span,
+                ambiguity_id=DATES_PERIOD_PENDING_ID,
+                options=_date_options(resolved.windows),
+            )
         )
         return
     if resolved.needs_timezone:
@@ -1093,6 +1159,7 @@ def _resolve_dates(
             "date_from",
             resolved.question or "Уточните даты поездки: отъезд и возвращение.",
             span,
+            options=_date_options(resolved.windows),
         )
     )
 
@@ -1204,7 +1271,7 @@ def outcome_from_delta(
     ]
     constraints = []
     for constraint in outcome.request.constraints:
-        span = _span_for(delta, constraint.field)
+        span = _span_for(delta, constraint.field) or report.spans.get(constraint.field)
         if span is not None and constraint.field in _fields_from_delta(report):
             constraints.append(constraint.evolve(source_kind="text_span", source_span=span))
         elif constraint.field in previous_spans:
@@ -1241,6 +1308,7 @@ _CONSTRAINT_SPAN_FIELD = {
     "hotel_breakfast": "breakfast",
     "hotel_stars_min": "stars_min",
     "hotel_free_cancellation": "free_cancellation",
+    "hotel_room_type": "room_type",
 }
 
 

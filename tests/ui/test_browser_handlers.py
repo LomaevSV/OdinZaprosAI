@@ -312,3 +312,36 @@ def test_destination_candidates_are_clickable_and_keep_origin(server: str) -> No
     keyboard = result.get("after_keyboard")
     assert keyboard is not None, "второй кандидат выбирается клавиатурой"
     assert keyboard["origin"] == "Москва" and keyboard["destination"] in keyboard["card_text"]
+
+
+# ---------------------------------------------------------------- DATE-003: кнопки вариантов дат
+
+
+@pytest.mark.req("DATE-003")
+def test_date_options_are_buttons_and_choice_keeps_trip_without_llm(tmp_path: Path) -> None:
+    text = "Из Москвы в Казань в ноябре на 3 ночи вдвоём"
+    fake = ScriptedLlm(
+        {
+            text: {
+                "origin": {"value": "Москва", "span": "Из Москвы"},
+                "destination": {"value": "Казань", "span": "в Казань"},
+                "dates": {"date_phrase": "в ноябре", "nights_phrase": "на 3 ночи"},
+                "adults": {"value": 2, "span": "вдвоём"},
+            }
+        }
+    )
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(base, "dates", HARNESS_TEXT=text)
+    options = result["options"]
+    assert 2 <= len(options) <= 4 and all("ноч" in option["label"] for option in options)
+    assert result["options_group_label"] == ["Варианты дат поездки"]
+    assert all("не бронирование" in option["title"] for option in options)
+    assert result["choice_posts"] == 1, "двойной клик — один запрос"
+    choice = result["choice_body"]["choice"]
+    assert choice["option_id"] == options[1]["id"] and "text" not in result["choice_body"]
+    after = result["after_choice"]
+    assert (after["dates"]["start"], after["dates"]["end"]) == (choice["date_from"], choice["date_to"])
+    assert (after["origin"], after["destination"], after["adults"]) == ("Москва", "Казань", 2)
+    assert result["options_after"] == 0 and result["offer_cards_after"] > 0
+    assert result["choice_user_message"].startswith("Выбираю даты:")
+    assert fake.roles() == ["interpreter", "composer"], "выбор дат не вызывает ни Интерпретатор, ни Composer"
