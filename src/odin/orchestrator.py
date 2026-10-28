@@ -663,10 +663,14 @@ class Orchestrator:
         previous: TripState | None = None,
     ) -> InterpretationOutcome:
         # UC-02: ответ на уточнение дополняет полученное ранее, повторно не спрашиваем.
+        # CITY-001: выбор предложенного направления (форма с одним полем) так же дополняет условия поездки.
         answering = (
             previous is not None
-            and previous.status == "awaiting_clarification"
             and previous.request is not None
+            and (
+                previous.status == "awaiting_clarification"
+                or (form is not None and bool(previous.candidate_destinations))
+            )
         )
 
         def interpret(value: StructuredForm) -> InterpretationOutcome:

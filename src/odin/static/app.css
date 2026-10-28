@@ -42,17 +42,22 @@ button.inactive { opacity: 0.6; }
 dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 8px; }
 dialog label { display: block; margin: 8px 0; }
 menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; }
-.mock-banner { border-color: var(--mock); font-weight: 600; }
-.offer-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
-.offer-column { display: grid; gap: 8px; }
-.offer-column h4 { margin: 0; font-size: 14px; }
+.offer-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.offer-column, .offer-section { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fcfcfd; }
+.offer-section { margin-top: 12px; }
+.column-title, .cart-section-title { margin: 0; padding: 6px 10px; font-size: 15px; font-weight: 700; color: #1f3d7a; background: #eef3ff; border-left: 4px solid #3366cc; border-radius: 4px; }
+.column-title .count { font-weight: 400; font-size: 13px; color: var(--muted); }
+.offer-section.transfers .column-title, .cart-section.transfer .cart-section-title { color: #3d4a5c; background: #f1f3f6; border-left-color: #7a8699; }
 .offer-column .empty { padding: 8px; border: 1px dashed var(--line); border-radius: 6px; }
+.cart-section { display: grid; gap: 6px; margin-top: 10px; }
+.cart-section-title { font-size: 14px; }
 .selection-bar { margin-top: 10px; padding: 8px 10px; border: 1px solid #3366cc; border-radius: 6px; background: #f5f8ff; display: grid; gap: 2px; }
 .selection-bar .total { font-weight: 600; }
 @media (min-width: 1280px) { .layout { grid-template-columns: minmax(360px, 1fr) minmax(640px, 2fr); } }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
-  .offer-columns { grid-template-columns: 1fr; }
+  .offer-columns { grid-template-columns: 1fr; gap: 16px; }
+  .column-title { position: sticky; top: 0; z-index: 1; }
 }
 .structured { margin-top: 8px; }
 .structured summary { cursor: pointer; font-size: 13px; color: var(--muted); }

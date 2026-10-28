@@ -99,7 +99,8 @@ def test_date_001_ranges_still_resolve_without_origin_timezone(phrase: str) -> N
 
 
 def test_unrecognized_phrase_is_not_blamed_on_timezone() -> None:
-    result = resolve_trip_dates("когда-нибудь летом", None, REF, None)
+    # «когда-нибудь летом» с DATE-003 — период; нераспознаваемая фраза — без сезона и месяца.
+    result = resolve_trip_dates("когда-нибудь потом", None, REF, None)
     assert result.status == "unresolved" and not result.needs_timezone
     assert "DEC-34" not in result.rule
 

@@ -12,13 +12,10 @@
     <span class="badge badge-mock" id="mode-badge" data-testid="global-mode">Режим: ДЕМО (Mock)</span>
     <span class="badge" id="llm-badge" data-testid="llm-mode">LLM: —</span>
   </header>
-  <p class="notice" data-testid="demo-notice">
-    Прототип. Данные с пометкой «ДЕМО» — демонстрационные: это не цены, не наличие и не расписание.
-    Live-данные — на момент запроса; покупка только демонстрационная.
+  <p class="notice" id="demo-notice" data-testid="demo-notice">
+    <span id="data-notice">Прототип. Данные с пометкой «ДЕМО» — демонстрационные: это не цены, не наличие и не расписание.
+    Live-данные — на момент запроса.</span> Покупка только демонстрационная.
     <span id="llm-notice">Свободный диалог недоступен без LLM (DEC-08) — используйте форму («Без LLM»).</span>
-  </p>
-  <p class="notice mock-banner" id="mock-banner" data-testid="mock-banner" hidden>
-    Демонстрационный режим. Предложения, цены и доступность могут быть синтетическими.
   </p>
 
   <main class="layout">
@@ -39,11 +36,11 @@
       <summary>Форма запроса (без LLM)</summary>
       <form id="trip-form" class="trip-form" data-testid="structured-form">
         <fieldset>
-          <label>Откуда <input name="origin" value="Москва" maxlength="120"></label>
-          <label>Куда <input name="destination" value="Казань" maxlength="120" placeholder="пусто — вдохновение"></label>
+          <label>Откуда <input name="origin" maxlength="120"></label>
+          <label>Куда <input name="destination" maxlength="120" placeholder="пусто — вдохновение"></label>
           <label>Дата отъезда <input name="date_from" type="date"></label>
           <label>Дата возвращения <input name="date_to" type="date"></label>
-          <label>Взрослых <input name="adults" type="number" min="1" max="9" value="2"></label>
+          <label>Взрослых <input name="adults" type="number" min="1" max="9"></label>
           <label>Возраст детей (через запятую) <input name="children_ages" placeholder="6, 10"></label>
           <label><input name="return_trip" type="checkbox" checked> нужен обратный путь</label>
           <label>Бюджет, ₽ <input name="budget_amount" inputmode="decimal" placeholder="40000"></label>

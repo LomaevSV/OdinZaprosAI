@@ -11,7 +11,7 @@ function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (key === "class") node.className = value;
-    else if (key.startsWith("data-")) node.setAttribute(key, value);
+    else if (key.startsWith("data-") || key.startsWith("aria-") || key === "role") node.setAttribute(key, value);
     else node[key] = value;
   }
   for (const child of children) node.append(child instanceof Node ? child : text(child));
@@ -22,15 +22,21 @@ function requestId() {
   return "req-" + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "").slice(0, 20) : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 }
 
+// Язык интерфейса — русский: сетевые и серверные сбои не показываются английскими текстами браузера.
 async function call(method, path, body) {
-  const response = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    throw new Error("нет связи с сервером, повторите попытку");
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = payload.message || `HTTP ${response.status}`;
+    const message = payload.message || `сервер вернул ошибку (код ${response.status})`;
     throw new Error(message);
   }
   return payload;
@@ -41,6 +47,7 @@ function say(role, message) {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
+const LLM_MODE_LABELS = { live: "подключён", off: "отключён", replay: "Replay (записанные ответы)" };
 const MODE_LABELS = {
   mock: "ДЕМО (Mock)",
   replay: "Replay: данные на дату",
@@ -75,13 +82,20 @@ const STOP_REASONS = {
 };
 const FIELD_LABELS = { budget_total: "бюджет", transport_mode: "вид транспорта", pets: "животные", hotel_breakfast: "завтрак", hotel_stars_min: "звёздность", hotel_free_cancellation: "бесплатная отмена" };
 const ROLE_LABELS = { outbound: "туда", return: "обратно", hotel: "гостиница", transfer_in: "трансфер к гостинице", transfer_out: "трансфер от гостиницы" };
+const COLUMN_TITLES = { outbound: "Транспорт туда", hotel: "Гостиницы", return: "Транспорт обратно" };
+
+// UI-007: заметный заголовок секции с числом вариантов; связан с секцией для экранных чтецов.
+function sectionTitle(id, title, count) {
+  return el("h4", { class: "column-title", id },
+    title, ...(count == null ? [] : [" ", el("span", { class: "count" }, `(${count})`)]));
+}
 
 function availabilityText(availability) {
   const label = AVAILABILITY[availability.availability_status] || availability.availability_status;
   return `Наличие: ${label} (${EVIDENCE[availability.evidence_level] || availability.evidence_level})`;
 }
 
-// UI-004: для ДЕМО-данных непроверенное наличие уже сказано общим баннером и бейджем «ДЕМО» на карточке;
+// UI-004/UI-005: для ДЕМО-данных непроверенное наличие уже сказано общим уведомлением и бейджем «ДЕМО» на карточке;
 // для Live/Replay строка наличия остаётся на каждой карточке без сокращений.
 function availabilityLines(availability) {
   const demoUnknown = availability.data_mode === "mock" && availability.availability_status === "unknown";
@@ -164,26 +178,45 @@ function renderTrip(trip) {
   }
   const hasOffers = Object.values(columns).some((items) => items.length);
   if (hasOffers) {
-    const titles = { outbound: "Транспорт туда", hotel: "Гостиница", return: "Транспорт обратно" };
     const grid = el("div", { class: "offer-columns", "data-testid": "offer-columns" });
     for (const role of ["outbound", "hotel", "return"]) {
       const empty = role === "return" && trip.request && trip.request.return_trip === false
         ? "обратный путь не нужен"
         : "вариантов не найдено (это не значит, что их нет)";
-      grid.append(el("div", { class: "offer-column", "data-testid": `column-${role}` },
-        el("h4", {}, titles[role]),
+      grid.append(el("section", { class: "offer-column", "data-testid": `column-${role}`, "aria-labelledby": `column-title-${role}` },
+        sectionTitle(`column-title-${role}`, COLUMN_TITLES[role], columns[role].length),
         ...(columns[role].length ? columns[role] : [el("p", { class: "meta empty" }, empty)])));
     }
     cards.append(grid);
   }
-  for (const offer of trip.transfer_options || []) {
-    cards.append(card(offer.title, `Время: ~${offer.duration_minutes} мин (оценка)`, offer.price, offer.source, offer.source.data_mode, offer.limitations));
+  // CART-UI-003: трансферы — отдельная секция, а не продолжение колонки «Транспорт обратно».
+  const transfers = trip.transfer_options || [];
+  if (transfers.length) {
+    const section = el("section", { class: "offer-section transfers", "data-testid": "transfer-section", "aria-labelledby": "transfer-title" },
+      sectionTitle("transfer-title", "Трансферы", transfers.length),
+      el("p", { class: "meta" }, "Оценка, не подтверждено поставщиком; в демо-покупку не входит."));
+    for (const offer of transfers) {
+      const direction = { transfer_in: "Туда: к гостинице. ", transfer_out: "Обратно: от гостиницы. " }[offer.direction] || "";
+      section.append(card(offer.title, `${direction}Время: ~${offer.duration_minutes} мин (оценка)`, offer.price, offer.source, offer.source.data_mode, offer.limitations));
+    }
+    cards.append(section);
   }
-  for (const candidate of trip.candidate_destinations || []) {
-    cards.append(el("div", { class: "card", "data-testid": "destination-card" },
-      el("div", {}, el("strong", {}, candidate.place.name), " ", modeBadge(candidate.source.data_mode)),
-      el("div", {}, candidate.description),
-      el("div", { class: "meta" }, `${candidate.cost_note}; климат: ${{ not_loaded: "нормы не загружены", norm: "климатическая норма", unknown: "неизвестно" }[candidate.climate_status] || candidate.climate_status}; визы: не проверено`)));
+  const candidates = trip.candidate_destinations || [];
+  if (candidates.length) {
+    // CITY-001: предложенные направления выбираются нажатием или клавиатурой; выбирается только «куда».
+    const chosenName = trip.request && trip.request.destination ? trip.request.destination.name : null;
+    const section = el("section", { class: "offer-section destinations", "data-testid": "destination-section", "aria-labelledby": "destination-title" },
+      sectionTitle("destination-title", "Предложенные направления", candidates.length),
+      el("p", { class: "meta" }, "Нажмите на направление, чтобы выбрать его как пункт назначения («куда»). Город отправления не меняется."));
+    for (const candidate of candidates) {
+      const node = el("div", { class: "card", "data-testid": "destination-card" },
+        el("div", {}, el("strong", {}, candidate.place.name), " ", modeBadge(candidate.source.data_mode)),
+        el("div", {}, candidate.description),
+        el("div", { class: "meta" }, `${candidate.cost_note}; климат: ${{ not_loaded: "нормы не загружены", norm: "климатическая норма", unknown: "неизвестно" }[candidate.climate_status] || candidate.climate_status}; визы: не проверено`));
+      makeDestinationSelectable(node, candidate, candidate.place.name === chosenName);
+      section.append(node);
+    }
+    cards.append(section);
   }
 
   const constraints = $("constraints");
@@ -266,6 +299,43 @@ function makeSelectable(node, role, offerId, title, selected) {
   });
 }
 
+function makeDestinationSelectable(node, candidate, selected) {
+  node.classList.add("selectable");
+  if (selected) node.classList.add("selected");
+  node.setAttribute("data-candidate-id", candidate.candidate_id);
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.setAttribute("aria-pressed", selected ? "true" : "false");
+  node.title = selected ? "Выбрано направлением" : "Нажмите, чтобы выбрать это направление";
+  node.addEventListener("click", () => chooseDestination(candidate));
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseDestination(candidate);
+    }
+  });
+}
+
+// CITY-001: выбор направления — ход с одним полем «куда»; сервер дополняет им известные условия поездки
+// (город отправления, даты, состав не теряются). Ход без LLM: платных вызовов нет.
+async function chooseDestination(candidate) {
+  if (!state.trip || state.busy) return;
+  const name = candidate.place.name;
+  const current = state.trip.request && state.trip.request.destination;
+  if (current && current.name === name) {
+    say("assistant", `Направление «${name}» уже выбрано.`);
+    return;
+  }
+  state.busy = true;
+  try {
+    say("user", `Выбираю направление (куда): ${name}`);
+    const turn = await sendMessage({ form: { destination: name } });
+    if (turn) resetCart();
+  } finally {
+    state.busy = false;
+  }
+}
+
 function currentSelections(trip) {
   // Сервер заменяет набор выбранных компонентов целиком: передаём текущий выбор по всем ролям,
   // чтобы выбор гостиницы не менял незаметно транспорт, и наоборот.
@@ -313,16 +383,35 @@ function renderQuestions(questions) {
   for (const question of questions || []) box.append(el("div", { class: "msg assistant" }, `Вопрос: ${question.question}`));
 }
 
+// CART-UI-002/003: корзина в логике путешествия; трансферы — отдельные секции «туда» и «обратно».
+const CART_SECTIONS = [
+  ["outbound", "Транспорт туда", ""],
+  ["transfer_in", "Трансфер туда: к гостинице", "transfer"],
+  ["hotel", "Проживание", ""],
+  ["transfer_out", "Трансфер обратно: от гостиницы", "transfer"],
+  ["return", "Транспорт обратно", ""],
+];
+
+function cartItemNode(item) {
+  return el("div", { class: "card", "data-testid": "cart-item", "data-role": item.role },
+    el("div", {}, el("strong", {}, item.title), " ", modeBadge(item.data_mode)),
+    el("div", {}, `Цена: ${money(item.price)}${item.informational ? " — информационная позиция" : ""}`),
+    el("div", { class: "meta" }, item.note || `Источник: ${item.source.provider}`));
+}
+
 function renderCart(cart) {
   state.cart = cart;
   const box = $("cart");
   box.hidden = false;
   box.replaceChildren(el("h3", {}, `Корзина ${cart.cart_id}`));
-  for (const item of cart.items) {
-    box.append(el("div", { class: "card" },
-      el("div", {}, el("strong", {}, item.title), " ", modeBadge(item.data_mode)),
-      el("div", {}, `Цена: ${money(item.price)}${item.informational ? " — информационная позиция" : ""}`),
-      el("div", { class: "meta" }, item.note || `Источник: ${item.source.provider}`)));
+  const known = new Set(CART_SECTIONS.map(([role]) => role));
+  const sections = [...CART_SECTIONS, ["other", "Прочее", ""]];
+  for (const [role, title, kind] of sections) {
+    const items = cart.items.filter((item) => (role === "other" ? !known.has(item.role) : item.role === role));
+    if (!items.length) continue;
+    box.append(el("section", { class: `cart-section ${kind}`.trim(), "data-testid": `cart-section-${role}`, "aria-labelledby": `cart-title-${role}` },
+      el("h4", { class: "cart-section-title", id: `cart-title-${role}` }, title),
+      ...items.map(cartItemNode)));
   }
   box.append(el("p", {}, `Итог: ${money(cart.total_price)} — ${COMPLETENESS[cart.completeness]}`));
   box.append(el("p", { class: "notice" }, cart.demo_notice));
@@ -368,11 +457,14 @@ async function ensureSession() {
   if (state.session) return state.session;
   state.session = await call("POST", `${API}/sessions`);
   state.revision = state.session.trip_revision;
-  $("llm-badge").textContent = `LLM: ${state.session.llm_mode}`;
+  $("llm-badge").textContent = `LLM: ${LLM_MODE_LABELS[state.session.llm_mode] || "режим неизвестен"}`;
   const dataMode = state.session.data_mode;
   $("mode-badge").textContent = `Данные: ${dataMode === "mixed" ? "Live (при сбое — ДЕМО)" : MODE_LABELS[dataMode] || dataMode}`;
   $("mode-badge").className = `badge badge-${dataMode === "mock" ? "mock" : "live"}`;
-  $("mock-banner").hidden = dataMode !== "mock";
+  // UI-005: одно уведомление о режиме данных вместо двух крупных баннеров; бейджи «ДЕМО» на карточках остаются.
+  if (dataMode === "mock") {
+    $("data-notice").textContent = "Демонстрационный режим: все предложения, цены и наличие синтетические (пометка «ДЕМО») — это не цены, не наличие и не расписание.";
+  }
   if (state.session.llm_mode === "live") {
     $("llm-notice").textContent = state.session.privacy_notice ||
       "LLM подключён: опишите поездку своими словами. Цены, даты и условия проверяет код, а не модель.";

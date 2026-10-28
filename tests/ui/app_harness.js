@@ -118,7 +118,7 @@ class FormData {
 
 const requests = [];
 async function fetchProxy(url, options = {}) {
-  requests.push({ method: options.method || "GET", path: String(url).replace(/\?.*/, "") });
+  requests.push({ method: options.method || "GET", path: String(url).replace(/\?.*/, ""), body: options.body ? JSON.parse(options.body) : null });
   return fetch(BASE + url, options);
 }
 
@@ -145,9 +145,34 @@ function selectableCards() {
 }
 const selected = (role) => selectableCards().filter((c) => c.getAttribute("data-role") === role && c.classList.contains("selected")).map((c) => c.getAttribute("data-offer-id"));
 const count = (method, fragment) => requests.filter((r) => r.method === method && r.path.includes(fragment)).length;
+const formValues = () => Object.fromEntries(Object.entries(formFields).map(([n, f]) => [n, f.type === "checkbox" ? f.checked : f.value]));
+function findAll(root, predicate) {
+  const found = [];
+  root.walk((node) => { if (predicate(node)) found.push(node); });
+  return found;
+}
+const byTestid = (root, prefix) => findAll(root, (n) => n.getAttribute && (n.getAttribute("data-testid") || "").startsWith(prefix));
+const destinationCards = () => byTestid(byId.cards, "destination-card");
+// Язык интерфейса: все тексты, которые видит пользователь (включая подсказки title/aria-label).
+const VISIBLE_IDS = ["messages", "questions", "trip-summary", "cards", "selection-bar", "cart-hint", "constraints", "cart", "receipt", "mode-badge", "llm-badge", "data-notice", "llm-notice", "manual-offer", "text-label", "cart-btn", "revision", "progress"];
+function visibleText() {
+  const parts = [];
+  for (const id of VISIBLE_IDS) {
+    const node = byId[id];
+    if (!node) continue;
+    parts.push(node.textContent);
+    node.walk((child) => {
+      if (child.title) parts.push(child.title);
+      const label = child.getAttribute && child.getAttribute("aria-label");
+      if (label) parts.push(label);
+    });
+  }
+  return parts.filter(Boolean);
+}
+const state_request = () => { const current = vm.runInContext("state", sandbox); return current.trip && current.trip.request; };
 
 (async () => {
-  const out = {};
+  const out = { form_values_initial: formValues() };
   await until(() => requests.some((r) => r.path.endsWith("/sessions")) && sandbox.document && byId.revision.textContent, "session");
   if (process.env.HARNESS_MODE === "session") {
     out.llm_badge = textOf("llm-badge");
@@ -167,6 +192,12 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
     };
     out.manual_button = textOf("manual-btn");
     out.offer_at_start = visibleOffer();
+    if (process.env.HARNESS_FORM_FIELDS) {
+      for (const pair of process.env.HARNESS_FORM_FIELDS.split(",")) {
+        const [name, value] = pair.split("=");
+        formFields[name].value = value;
+      }
+    }
     const sayText = async (value) => {
       const shown = messages().length;
       byId["text-input"].value = value;
@@ -216,6 +247,42 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
     return;
   }
 
+  if (process.env.HARNESS_MODE === "inspiration") {
+    // CITY-001: предложенное направление выбирается нажатием/клавиатурой; «откуда» и прочие условия не теряются.
+    const today = new Date();
+    const start = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
+    const end = new Date(today.getTime() + 32 * 86400000).toISOString().slice(0, 10);
+    formData.set("trip-form", { origin: "Москва", destination: "", wishes_tags: "море", date_from: start, date_to: end, adults: "2", return_trip: "on" });
+    await byId["trip-form"].dispatch("submit");
+    await until(() => destinationCards().length > 0, "destination cards");
+    const cards = destinationCards();
+    out.destination_cards = cards.map((c) => ({ id: c.getAttribute("data-candidate-id"), role: c.getAttribute("role"), tabindex: c.getAttribute("tabindex"), selectable: c.classList.contains("selectable"), text: c.textContent }));
+    const first = cards[0];
+    const posts = count("POST", "/messages");
+    await first.dispatch("click");
+    await until(() => count("POST", "/messages") > posts && state_request() && state_request().destination, "destination chosen");
+    await until(() => byId.progress.hidden, "turn done");
+    const chosenPost = requests.filter((r) => r.method === "POST" && r.path.endsWith("/messages")).slice(-1)[0];
+    out.choice_body = chosenPost.body;
+    out.after_click = { origin: state_request().origin && state_request().origin.name, destination: state_request().destination.name, adults: state_request().party.adults, dates: state_request().date_range };
+    out.offer_cards_after_click = selectableCards().length;
+    out.selected_destination = destinationCards().filter((c) => c.classList.contains("selected")).map((c) => c.getAttribute("data-candidate-id"));
+    const before = count("POST", "/messages");
+    await destinationCards().find((c) => c.classList.contains("selected")).dispatch("click");
+    out.reclick_requests = count("POST", "/messages") - before;
+    out.reclick_message = messages().slice(-1)[0];
+    const other = destinationCards().find((c) => !c.classList.contains("selected"));
+    if (other) {
+      const name = other.textContent;
+      await other.dispatch("keydown", { key: "Enter" });
+      await until(() => count("POST", "/messages") > before && byId.progress.hidden && state_request().destination.name !== out.after_click.destination, "second destination");
+      out.after_keyboard = { origin: state_request().origin && state_request().origin.name, destination: state_request().destination.name, card_text: name };
+    }
+    out.visible_text = visibleText();
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
   // CART-UI-001: нажатие без плана не «молчит».
   const before = messages().length;
   await byId["cart-btn"].dispatch("click");
@@ -239,7 +306,12 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
   const testids = [];
   byId.cards.walk((node) => { if (node.getAttribute && node.getAttribute("data-testid")) testids.push(node.getAttribute("data-testid")); });
   out.columns = testids.filter((t) => t.startsWith("column-"));
-  out.mock_banner_hidden = byId["mock-banner"] ? byId["mock-banner"].hidden : null;
+  out.mock_banner_present = Boolean(byId["mock-banner"]);
+  out.data_notice = textOf("data-notice");
+  out.column_titles = findAll(byId.cards, (n) => n.classList && n.classList.contains("column-title")).map((n) => n.textContent);
+  out.column_labelled = byTestid(byId.cards, "column-").map((n) => n.getAttribute("aria-labelledby"));
+  out.transfer_section = byTestid(byId.cards, "transfer-section").map((n) => n.textContent);
+  out.transfers_inside_columns = byTestid(byId.cards, "column-").some((column) => /Трансфер|трансфер/.test(column.textContent));
   out.selection_bar = textOf("selection-bar");
   out.selection_bar_hidden = byId["selection-bar"] ? byId["selection-bar"].hidden : null;
   out.demo_card_availability_lines = selectableCards().filter((c) => c.textContent.includes("Наличие: не подтверждено (ДЕМО)")).length;
@@ -274,6 +346,9 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
   await until(() => !byId.cart.hidden, "cart shown");
   out.cart_posts = count("POST", "/cart");
   out.cart_text = byId.cart.textContent;
+  out.cart_sections = byTestid(byId.cart, "cart-section-").map((n) => n.getAttribute("data-testid").replace("cart-section-", ""));
+  out.cart_section_titles = findAll(byId.cart, (n) => n.classList && n.classList.contains("cart-section-title")).map((n) => n.textContent);
+  out.cart_items_by_section = Object.fromEntries(byTestid(byId.cart, "cart-section-").map((section) => [section.getAttribute("data-testid").replace("cart-section-", ""), byTestid(section, "cart-item").map((i) => i.getAttribute("data-role"))]));
   out.cart_scrolled = byId.cart.scrolled;
   out.cart_message = messages().slice(-1)[0];
   out.cart_button_restored = byId["cart-btn"].textContent;
@@ -287,6 +362,7 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
   }
   out.cart_hidden_after_reselect = byId.cart.hidden;
   out.requests = requests.filter((r) => r.method === "POST").map((r) => r.path.replace(/\/(s|t|cart)-[0-9a-f]+/g, "/$1-*"));
+  out.visible_text = visibleText();
   process.stdout.write(JSON.stringify(out) + "\n");
 })().catch((error) => {
   process.stdout.write(JSON.stringify({ error: String(error && error.stack || error) }) + "\n");

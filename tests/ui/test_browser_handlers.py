@@ -148,11 +148,43 @@ def test_three_offer_columns_and_selection_bar(observed: dict[str, Any]) -> None
     assert "Туда:" in bar and "Гостиница:" in bar and "Обратно:" in bar and "Итого:" in bar
 
 
-def test_mock_banner_replaces_per_card_availability_repeats(observed: dict[str, Any]) -> None:
-    assert observed["mock_banner_hidden"] is False, "Mock обозначен общим баннером"
+@pytest.mark.req("UI-004", "UI-005")
+def test_single_mock_notice_replaces_duplicate_banner(observed: dict[str, Any]) -> None:
+    assert observed["mock_banner_present"] is False, "второй крупный баннер ДЕМО убран (UI-005)"
+    assert "синтетические" in observed["data_notice"] and "ДЕМО" in observed["data_notice"], (
+        "Mock обозначен одним общим уведомлением"
+    )
     assert observed["demo_card_availability_lines"] == 0, (
         "без повтора «не подтверждено (ДЕМО)» на каждой карточке"
     )
+
+
+@pytest.mark.req("UI-007", "CART-UI-003")
+def test_column_headings_and_separate_transfers(observed: dict[str, Any]) -> None:
+    titles = observed["column_titles"]
+    assert [title.split(" (")[0] for title in titles[:3]] == ["Транспорт туда", "Гостиницы", "Транспорт обратно"]
+    assert all(title.endswith(")") for title in titles[:3]), "у заголовка колонки — число вариантов"
+    assert observed["column_labelled"] == ["column-title-outbound", "column-title-hotel", "column-title-return"]
+    assert observed["transfer_section"] and observed["transfer_section"][0].startswith("Трансферы")
+    assert observed["transfers_inside_columns"] is False, "трансфер не внутри колонки «Транспорт обратно»"
+
+
+@pytest.mark.req("CART-UI-002", "CART-UI-003")
+def test_cart_follows_trip_order_with_separate_transfers(observed: dict[str, Any]) -> None:
+    order = ["outbound", "transfer_in", "hotel", "transfer_out", "return"]
+    sections = observed["cart_sections"]
+    assert sections == [role for role in order if role in sections], sections
+    assert {"outbound", "hotel", "return"} <= set(sections)
+    for role, roles in observed["cart_items_by_section"].items():
+        assert set(roles) == {role}, (role, roles)
+    if "transfer_in" in sections:
+        assert "Трансфер туда: к гостинице" in observed["cart_section_titles"]
+
+
+@pytest.mark.req("UI-006")
+def test_new_manual_form_has_no_demo_route(observed: dict[str, Any]) -> None:
+    initial = observed["form_values_initial"]
+    assert (initial["origin"], initial["destination"], initial["adults"]) == ("", "", "")
 
 
 def test_structured_form_stays_open_without_llm(observed: dict[str, Any]) -> None:
@@ -170,7 +202,7 @@ def test_structured_form_is_collapsed_when_llm_is_live(tmp_path: Path) -> None:
     }
     for base in _serve(tmp_path, env):
         result = _run(base, "session")
-        assert result["llm_badge"] == "LLM: live"
+        assert result["llm_badge"] == "LLM: подключён"
         assert result["structured_open"] is False
         assert result["post_requests"] == ["/api/v1/sessions"], "только создание сессии, без ходов LLM"
 
@@ -189,7 +221,12 @@ FORM_DATES = f"{TRIP_START.isoformat()},{TRIP_END.isoformat()}"
 @pytest.mark.req("UI-003", "DEC-08")
 def test_manual_mode_is_offered_when_llm_is_off_and_keeps_text(server: str) -> None:
     result = _run(
-        server, "manual", HARNESS_TEXT_FAIL="Хочу в Казань на выходные", HARNESS_OPEN="offer", HARNESS_FORM_DATES=FORM_DATES
+        server,
+        "manual",
+        HARNESS_TEXT_FAIL="Хочу в Казань на выходные",
+        HARNESS_OPEN="offer",
+        HARNESS_FORM_DATES=FORM_DATES,
+        HARNESS_FORM_FIELDS="origin=Москва,destination=Казань,adults=2",
     )
     assert result["manual_button"] == "Без LLM"
     assert result["offer_at_start"] is True, "без LLM ручной режим предлагается сразу"
@@ -239,7 +276,12 @@ def test_manual_mode_is_offered_when_llm_fails(tmp_path: Path) -> None:
     fake = ScriptedLlm({}, failure=ChatResult("error", None, "auth_401", 401, 1, 4))
     for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
         result = _run(
-            base, "manual", HARNESS_TEXT_FAIL="Хочу в Казань", HARNESS_OPEN="offer", HARNESS_FORM_DATES=FORM_DATES
+            base,
+            "manual",
+            HARNESS_TEXT_FAIL="Хочу в Казань",
+            HARNESS_OPEN="offer",
+            HARNESS_FORM_DATES=FORM_DATES,
+            HARNESS_FORM_FIELDS="origin=Москва,destination=Казань,adults=2",
         )
     assert result["offer_at_start"] is False
     assert result["fail_text_kept"] == "Хочу в Казань"
@@ -247,3 +289,26 @@ def test_manual_mode_is_offered_when_llm_fails(tmp_path: Path) -> None:
     assert result["structured_open_after"] is True
     assert result["cards_after_form"] > 0, result["form_reply"]
     assert set(fake.roles()) == {"interpreter"}, "после сбоя ход из формы к LLM не обращается"
+
+
+# ---------------------------------------------------------------- CITY-001: выбор предложенного направления
+
+
+@pytest.mark.req("CITY-001")
+def test_destination_candidates_are_clickable_and_keep_origin(server: str) -> None:
+    result = _run(server, "inspiration")
+    cards = result["destination_cards"]
+    assert len(cards) >= 2
+    assert all(card["selectable"] and card["role"] == "button" and card["tabindex"] == "0" for card in cards)
+    assert result["choice_body"]["form"] == {"destination": result["after_click"]["destination"]}, (
+        "клик передаёт только «куда», а не весь набор полей"
+    )
+    after = result["after_click"]
+    assert after["origin"] == "Москва", "«откуда» не подменяется выбранным городом"
+    assert after["destination"] != "Москва" and after["adults"] == 2 and after["dates"] is not None
+    assert result["offer_cards_after_click"] > 0, "после выбора собран план с вариантами"
+    assert len(result["selected_destination"]) == 1
+    assert result["reclick_requests"] == 0 and "уже выбрано" in result["reclick_message"]
+    keyboard = result.get("after_keyboard")
+    assert keyboard is not None, "второй кандидат выбирается клавиатурой"
+    assert keyboard["origin"] == "Москва" and keyboard["destination"] in keyboard["card_text"]
