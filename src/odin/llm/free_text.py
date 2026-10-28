@@ -544,6 +544,8 @@ class DeltaReport:
 
 # Уточнения, которые переносятся между ходами через ``TripRequest.ambiguities`` (UC-02: полученное не теряется).
 NIGHTS_PENDING_ID = "amb-llm-nights"
+# DEC-34: относительная фраза даты ждёт часовой пояс пункта отправления.
+DATES_TZ_PENDING_ID = "amb-llm-dates-tz"
 CHILDREN_PENDING_ID = "amb-llm-children"
 _CHILD_WORDS = re.compile(r"(ребен|ребён|дет(и|ей|ьми|ям)\b|сын|доч|малыш|младен)", re.IGNORECASE)
 
@@ -620,6 +622,7 @@ def apply_delta(
     reference_datetime: datetime,
     timezone_for: Callable[[str], str | None] | None = None,
     previous_ambiguities: list[Ambiguity] | None = None,
+    previous_date_expressions: list[DateExpression] | None = None,
 ) -> tuple[StructuredForm, DeltaReport]:
     """Накладывает проверенную дельту на прежние условия. Непроверенное значение не применяется."""
     report = DeltaReport()
@@ -768,6 +771,20 @@ def apply_delta(
         report=report,
         resolver=timezone_for,
     )
+    pending_dates = _pending_timezone_phrase(previous_ambiguities, previous_date_expressions)
+    new_phrase = delta.dates is not None and bool(delta.dates.date_phrase)
+    if pending_dates is not None and not new_phrase and values.get("date_from") is None:
+        # DEC-34: фраза прошлого хода («завтра») разрешается, когда стал известен пункт отправления,
+        # от исходной опорной даты; без пояса вопрос повторяется.
+        phrase, original_reference = pending_dates
+        _resolve_dates(
+            phrase,
+            None,
+            values=values,
+            reference=original_reference or reference_datetime,
+            report=report,
+            resolver=timezone_for,
+        )
     _apply_pending_nights(report.pending_nights or pending_nights, values=values, report=report)
 
     for fragment in delta.unparsed:
@@ -791,20 +808,49 @@ def _transport_modes(value: TransportValue) -> list[str]:
 
 
 def _timezone_for(values: dict[str, Any], resolver: Callable[[str], str | None] | None = None) -> str | None:
-    """Часовой пояс для календаря. В Live — только геокодинг через оркестратор (без демо-справочника,
-    решение 25.10: нет незаметной подмены Live на Mock); в Mock — демо-справочник."""
-    if resolver is not None:
-        for key in ("origin", "destination"):
-            name = values.get(key)
-            if name:
-                zone = resolver(str(name))
-                if zone:
-                    return zone
+    """Часовой пояс для календаря — только пункта отправления (DEC-34). Пояс пункта назначения и пояс по
+    умолчанию не подставляются: без достоверного пояса отправления календарь сам решает, влияет ли это на
+    результат. В Live — только геокодинг через оркестратор (без демо-справочника, решение 25.10: нет
+    незаметной подмены Live на Mock); в Mock — демо-справочник."""
+    name = values.get("origin")
+    if not name:
         return None
-    for key in ("origin", "destination"):
-        place = normalize_city(values.get(key))
-        if place is not None:
-            return place.timezone
+    if resolver is not None:
+        return resolver(str(name)) or None
+    place = normalize_city(name)
+    return place.timezone if place is not None else None
+
+
+def _timezone_question(phrase: str, origin: str | None) -> Ambiguity:
+    if origin:
+        reason = f"часовой пояс пункта отправления «{origin}» не определён"
+        ask = "Назовите даты числами."
+    else:
+        reason = "пункт отправления ещё не назван"
+        ask = "Назовите город отправления или даты числами."
+    return _question(
+        "date_from",
+        f"Уточните даты: «{phrase}» считается по местной дате в пункте отправления, а {reason}. {ask}",
+        phrase,
+        ambiguity_id=DATES_TZ_PENDING_ID,
+    )
+
+
+def _pending_timezone_phrase(
+    ambiguities: list[Ambiguity] | None, expressions: list[DateExpression] | None
+) -> tuple[str, datetime | None] | None:
+    """Фраза даты, отложенная до появления пояса отправления, и её исходная опорная дата."""
+    for item in ambiguities or []:
+        if item.ambiguity_id == DATES_TZ_PENDING_ID and item.source_span:
+            reference = next(
+                (
+                    expression.reference_datetime
+                    for expression in reversed(expressions or [])
+                    if expression.raw_text == item.source_span and expression.timezone is None
+                ),
+                None,
+            )
+            return item.source_span, reference
     return None
 
 
@@ -836,8 +882,22 @@ def _apply_dates(
     if nights_phrase and not span_in_text(nights_phrase, text):
         report.rejected.append("nights")
         nights_phrase = None
+    _resolve_dates(
+        dates.date_phrase, nights_phrase, values=values, reference=reference, report=report, resolver=resolver
+    )
+
+
+def _resolve_dates(
+    date_phrase: str,
+    nights_phrase: str | None,
+    *,
+    values: dict[str, Any],
+    reference: datetime,
+    report: DeltaReport,
+    resolver: Callable[[str], str | None] | None,
+) -> None:
     resolved = calendar.resolve_trip_dates(
-        dates.date_phrase, nights_phrase, reference, _timezone_for(values, resolver)
+        date_phrase, nights_phrase, reference, _timezone_for(values, resolver)
     )
     report.date_expressions.extend(resolved.expressions)
     if resolved.status == "resolved":
@@ -850,13 +910,19 @@ def _apply_dates(
         values["date_from"] = resolved.start
         values["date_to"] = None
         return
+    if resolved.needs_timezone:
+        # DEC-34: пояс не угадывается; фраза ждёт пункт отправления, длительность сохраняется (UC-02).
+        report.questions.append(_timezone_question(date_phrase.strip(), values.get("origin")))
+        if nights_phrase and calendar.nights_value(nights_phrase)[0]:
+            report.pending_nights = nights_phrase.strip()
+        return
     if resolved.start is not None:
         # Дата отъезда понятна, длительность — нет: дата сохраняется, вопрос — только о ночах.
         values["date_from"] = resolved.start
         values["date_to"] = None
-        span = nights_phrase or dates.date_phrase
+        span = nights_phrase or date_phrase
     else:
-        span = dates.date_phrase
+        span = date_phrase
     report.questions.append(
         _question(
             "date_from",
@@ -876,7 +942,11 @@ def _apply_pending_nights(phrase: str | None, *, values: dict[str, Any], report:
         return
     if values.get("date_from") is None:
         report.pending_nights = phrase
-        report.questions = [q for q in report.questions if q.field not in ("date_from", "date_to")]
+        report.questions = [
+            q
+            for q in report.questions
+            if q.field not in ("date_from", "date_to") or q.ambiguity_id == DATES_TZ_PENDING_ID
+        ]
         report.questions.append(_nights_pending_question(phrase))
         return
     if values.get("date_to") is None:
@@ -921,6 +991,7 @@ def outcome_from_delta(
     previous_constraints: list[Constraint] | None = None,
     timezone_for: Callable[[str], str | None] | None = None,
     previous_ambiguities: list[Ambiguity] | None = None,
+    previous_date_expressions: list[DateExpression] | None = None,
 ) -> InterpretationOutcome:
     """Полный путь: проверка фрагментов → календарь → форма → ``TripRequest`` → вопросы UC-02."""
     previous_spans = {
@@ -934,6 +1005,7 @@ def outcome_from_delta(
         reference_datetime=reference_datetime,
         timezone_for=timezone_for,
         previous_ambiguities=previous_ambiguities,
+        previous_date_expressions=previous_date_expressions,
     )
     outcome = interpret_structured_form(
         form,

@@ -81,6 +81,22 @@ for (const match of html.matchAll(/<button[^>]*\sid="([^"]+)"[^>]*>([^<]*)</g)) 
 for (const match of html.matchAll(/<button[^>]*\sid="([^"]+)"[^>]*\sdisabled[\s>]/g)) byId[match[1]].disabled = true;
 const textOf = (id) => (byId[id] ? byId[id].textContent : null);
 
+// Поля формы ручного ввода (UI-003): значения и флажки из разметки, как у браузера при загрузке.
+const formFields = {};
+const tripFormHtml = (html.match(/<form id="trip-form"[\s\S]*?<\/form>/) || [""])[0];
+for (const match of tripFormHtml.matchAll(/<(input|select)\b([^>]*)>/g)) {
+  const attrs = match[2];
+  const name = (attrs.match(/\sname="([^"]+)"/) || [])[1];
+  if (!name) continue;
+  const field = new Element(match[1]);
+  field.name = name;
+  field.type = match[1] === "select" ? "select-one" : (attrs.match(/\stype="([^"]+)"/) || [, "text"])[1];
+  field.value = (attrs.match(/\svalue="([^"]*)"/) || [, ""])[1];
+  field.checked = /\schecked(\s|$)/.test(attrs);
+  formFields[name] = field;
+}
+byId["trip-form"].elements = { namedItem: (name) => formFields[name] || null };
+
 const document = {
   getElementById: (id) => byId[id] || null,
   createElement: (tag) => new Element(tag),
@@ -88,8 +104,15 @@ const document = {
 };
 
 const formData = new Map();
+function fieldValues() {
+  const values = {};
+  for (const [name, field] of Object.entries(formFields)) {
+    if (field.type === "checkbox") { if (field.checked) values[name] = "on"; } else values[name] = field.value;
+  }
+  return values;
+}
 class FormData {
-  constructor(form) { this.values = formData.get(form.id) || {}; }
+  constructor(form) { this.values = formData.get(form.id) || (form.id === "trip-form" ? fieldValues() : {}); }
   get(name) { return name in this.values ? this.values[name] : null; }
 }
 
@@ -130,6 +153,65 @@ const count = (method, fragment) => requests.filter((r) => r.method === method &
     out.llm_badge = textOf("llm-badge");
     out.structured_open = byId["structured-details"] ? byId["structured-details"].open !== false : null;
     out.post_requests = requests.filter((r) => r.method === "POST").map((r) => r.path.replace(/\/(s|t)-[0-9a-f]+/g, "/$1-*"));
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
+  if (process.env.HARNESS_MODE === "manual") {
+    // UI-003: кнопка «Без LLM», предложение при недоступном LLM, перенос условий, ход формы без LLM.
+    const visibleOffer = () => !byId["manual-offer"].hidden;
+    const offerButton = () => {
+      let found = null;
+      byId["manual-offer"].walk((node) => { if (node.getAttribute && node.getAttribute("data-testid") === "manual-offer-button") found = node; });
+      return found;
+    };
+    out.manual_button = textOf("manual-btn");
+    out.offer_at_start = visibleOffer();
+    const sayText = async (value) => {
+      const shown = messages().length;
+      byId["text-input"].value = value;
+      await byId["text-form"].dispatch("submit");
+      await until(() => messages().length >= shown + 2 && byId.progress.hidden, "text turn");
+      await sleep(50);
+      return messages().slice(shown + 1).join(" | ");
+    };
+    if (process.env.HARNESS_TEXT_OK) {
+      out.ok_reply = await sayText(process.env.HARNESS_TEXT_OK);
+      out.ok_text_cleared = byId["text-input"].value === "";
+      out.offer_after_ok = visibleOffer();
+    }
+    if (process.env.HARNESS_TEXT_FAIL) {
+      out.fail_reply = await sayText(process.env.HARNESS_TEXT_FAIL);
+      out.fail_text_kept = byId["text-input"].value;
+      out.offer_after_fail = visibleOffer();
+      out.offer_text = textOf("manual-offer");
+    }
+    if (process.env.HARNESS_TOUCH) {
+      // Поле, изменённое пользователем в форме, не перезаписывается условиями из диалога.
+      const [name, value] = process.env.HARNESS_TOUCH.split("=");
+      formFields[name].value = value;
+      await byId["trip-form"].dispatch("input", { target: formFields[name] });
+    }
+    byId["structured-details"].open = false;
+    const opener = process.env.HARNESS_OPEN === "offer" ? offerButton() : byId["manual-btn"];
+    out.opener_found = Boolean(opener);
+    await opener.dispatch("click");
+    out.structured_open_after = byId["structured-details"].open === true;
+    out.manual_message = messages().slice(-1)[0];
+    out.offer_after_open = visibleOffer();
+    out.form_values = Object.fromEntries(Object.entries(formFields).map(([n, f]) => [n, f.type === "checkbox" ? f.checked : f.value]));
+    if (process.env.HARNESS_FORM_DATES) {
+      const [from, to] = process.env.HARNESS_FORM_DATES.split(",");
+      formFields.date_from.value = from;
+      formFields.date_to.value = to;
+    }
+    const posts = count("POST", "/messages");
+    const shown = messages().length;
+    await byId["trip-form"].dispatch("submit");
+    await until(() => count("POST", "/messages") > posts && messages().length >= shown + 2 && byId.progress.hidden, "form turn");
+    out.form_reply = messages().slice(shown + 1).join(" | ");
+    out.form_user_message = messages()[shown];
+    out.cards_after_form = selectableCards().length;
     process.stdout.write(JSON.stringify(out) + "\n");
     return;
   }

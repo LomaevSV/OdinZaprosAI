@@ -338,6 +338,8 @@ class Orchestrator:
         self._places: dict[str, ResolvedPlace] = {}
         # Уведомления хода о сбоях Live и замене на ДЕМО: попадают в ответ (нет незаметной подмены).
         self._turn_notices: list[str] = []
+        # UI-003: ход из формы («Без LLM») не обращается к LLM — ни к Интерпретатору, ни к Composer.
+        self._turn_llm_allowed = True
         # LLM-CONCURRENCY-01: бюджеты LLM и инструментов, журнал вызовов и уведомления — состояние одного хода
         # в общем экземпляре. session_lock разделяет только ходы одной сессии, поэтому ходы разных сессий
         # выполняются по очереди: иначе начало чужого хода сбрасывало бы бюджет посреди текущего.
@@ -456,7 +458,7 @@ class Orchestrator:
         ):
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
-            self._start_turn(session_id, request_id, trip_id)
+            self._start_turn(session_id, request_id, trip_id, llm_allowed=form is None)
             started = time.perf_counter()
             try:
                 return self._handle_message_body(
@@ -528,7 +530,10 @@ class Orchestrator:
         result.input_mode = input_mode
         return result
 
-    def _start_turn(self, session_id: str, request_id: str, trip_id: str) -> None:
+    def _start_turn(
+        self, session_id: str, request_id: str, trip_id: str, *, llm_allowed: bool = True
+    ) -> None:
+        self._turn_llm_allowed = llm_allowed
         self.registry.start_turn(datetime.now(tz=UTC) + timedelta(seconds=self.limits.turn_deadline_s))
         self.llm.start_turn(
             request_id=request_id,
@@ -549,6 +554,7 @@ class Orchestrator:
     def _end_turn(self) -> None:
         """Ход завершён: сброс привязки LLM к запросу (OBS-CONTEXT-03)."""
         self.llm.attempt_sink = None
+        self._turn_llm_allowed = True
 
     def _run_turn(
         self,
@@ -627,7 +633,7 @@ class Orchestrator:
     def _answer(self, facts: ComposerFacts) -> tuple[str, bool]:
         """Шаблон по таблице фактов → (если включён) LLM-Composer → проверка фактов → шаблон при сбое."""
         text_out, verified = safe_answer(facts)
-        if not verified or not self.llm.composer_enabled:
+        if not verified or not self.llm.composer_enabled or not self._turn_llm_allowed:
             return text_out, verified
         result = self.llm.complete_structured(
             role="composer",
@@ -749,6 +755,7 @@ class Orchestrator:
             previous_constraints=list(previous.request.constraints) if known else None,  # type: ignore[union-attr]
             timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
             previous_ambiguities=list(previous.request.ambiguities) if known else None,  # type: ignore[union-attr]
+            previous_date_expressions=list(previous.request.date_expressions) if known else None,  # type: ignore[union-attr]
         )
         if mode == "free_text_replay":
             outcome = replace(outcome, notes=[*outcome.notes, *result.uncertainties])

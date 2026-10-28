@@ -56,3 +56,6 @@ menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; }
 }
 .structured { margin-top: 8px; }
 .structured summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.text-form .secondary { margin-left: 6px; }
+.manual-offer { margin-top: 8px; padding: 6px 8px; border: 1px solid #f0d9a8; border-radius: 6px; background: #fff7e6; font-size: 13px; }
+.manual-offer button { margin-left: 4px; }

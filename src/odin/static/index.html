@@ -15,7 +15,7 @@
   <p class="notice" data-testid="demo-notice">
     Прототип. Данные с пометкой «ДЕМО» — демонстрационные: это не цены, не наличие и не расписание.
     Live-данные — на момент запроса; покупка только демонстрационная.
-    <span id="llm-notice">Свободный диалог недоступен без LLM (DEC-08) — используйте форму.</span>
+    <span id="llm-notice">Свободный диалог недоступен без LLM (DEC-08) — используйте форму («Без LLM»).</span>
   </p>
   <p class="notice mock-banner" id="mock-banner" data-testid="mock-banner" hidden>
     Демонстрационный режим. Предложения, цены и доступность могут быть синтетическими.
@@ -30,7 +30,10 @@
         <textarea id="text-input" rows="2" maxlength="4000"
           placeholder="Например: из Москвы в Казань 20–22 ноября вдвоём, не самолётом, до 60 000 ₽"></textarea>
         <button type="submit">Отправить текст</button>
+        <button type="button" id="manual-btn" class="secondary" data-testid="manual-mode"
+          title="Открыть форму ручного ввода: запрос обрабатывается без LLM">Без LLM</button>
       </form>
+      <div id="manual-offer" class="manual-offer" data-testid="manual-offer" hidden></div>
 
       <details id="structured-details" class="structured" open>
       <summary>Форма запроса (без LLM)</summary>

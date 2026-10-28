@@ -22,6 +22,9 @@ import pytest
 from odin.api import create_app
 from odin.app import build_application
 from odin.config import Settings
+from odin.llm.openai_client import ChatResult
+from tests.conftest import TRIP_END, TRIP_START
+from tests.llm_fakes import ScriptedLlm, ru_date
 
 HARNESS = Path(__file__).with_name("app_harness.js")
 NODE = shutil.which("node")
@@ -38,16 +41,16 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _serve(tmp_path: Path, env: dict[str, str]) -> Iterator[str]:
+def _serve(tmp_path: Path, env: dict[str, str], llm: Any = None) -> Iterator[str]:
     import uvicorn
 
     settings = Settings.from_env(
         {"ODIN_DB_PATH": str(tmp_path / "ui.sqlite3"), "ODIN_DATA_MODE": "mock", **env}
     )
     port = _free_port()
-    config = uvicorn.Config(
-        create_app(application=build_application(settings)), host="127.0.0.1", port=port, log_level="warning"
-    )
+    factory = (lambda _: llm) if llm is not None else None
+    application = build_application(settings, llm_client_factory=factory)
+    config = uvicorn.Config(create_app(application=application), host="127.0.0.1", port=port, log_level="warning")
     instance = uvicorn.Server(config)
     thread = threading.Thread(target=instance.run, daemon=True)
     thread.start()
@@ -68,10 +71,10 @@ def server(tmp_path: Path) -> Iterator[str]:
     yield from _serve(tmp_path, {"ODIN_LLM_MODE": "off"})
 
 
-def _run(base: str, mode: str = "full") -> dict[str, Any]:
+def _run(base: str, mode: str = "full", **extra: str) -> dict[str, Any]:
     completed = subprocess.run(
         [NODE, str(HARNESS)],  # type: ignore[list-item]
-        env={"ODIN_BASE": base, "PATH": "", "HARNESS_MODE": mode},
+        env={"ODIN_BASE": base, "PATH": "", "HARNESS_MODE": mode, **extra},
         capture_output=True,
         text=True,
         timeout=120,
@@ -170,3 +173,77 @@ def test_structured_form_is_collapsed_when_llm_is_live(tmp_path: Path) -> None:
         assert result["llm_badge"] == "LLM: live"
         assert result["structured_open"] is False
         assert result["post_requests"] == ["/api/v1/sessions"], "только создание сессии, без ходов LLM"
+
+
+# ---------------------------------------------------------------- UI-003: режим «Без LLM»
+
+FAKE_LLM_ENV = {
+    "ODIN_LLM_MODE": "live",
+    "ODIN_LLM_BASE_URL": "https://llm.example.test/v1",
+    "ODIN_LLM_MODEL": "fake-model",
+    "ODIN_LLM_API_KEY": "test-key",
+}
+FORM_DATES = f"{TRIP_START.isoformat()},{TRIP_END.isoformat()}"
+
+
+@pytest.mark.req("UI-003", "DEC-08")
+def test_manual_mode_is_offered_when_llm_is_off_and_keeps_text(server: str) -> None:
+    result = _run(
+        server, "manual", HARNESS_TEXT_FAIL="Хочу в Казань на выходные", HARNESS_OPEN="offer", HARNESS_FORM_DATES=FORM_DATES
+    )
+    assert result["manual_button"] == "Без LLM"
+    assert result["offer_at_start"] is True, "без LLM ручной режим предлагается сразу"
+    assert "Свободный диалог недоступен" in result["fail_reply"]
+    assert result["fail_text_kept"] == "Хочу в Казань на выходные", "введённый текст не стирается"
+    assert result["offer_after_fail"] is True and "без LLM" in result["offer_text"]
+    assert result["opener_found"] and result["structured_open_after"] is True
+    assert result["offer_after_open"] is False
+    assert "Ручной режим без LLM" in result["manual_message"]
+    assert result["form_user_message"] == "Запрос из формы (без LLM)"
+    assert result["cards_after_form"] > 0, result["form_reply"]
+
+
+@pytest.mark.req("UI-003", "DEC-08")
+def test_manual_mode_keeps_dialog_parameters_and_does_not_call_llm(tmp_path: Path) -> None:
+    dates = f"с {ru_date(TRIP_START)} по {ru_date(TRIP_END)}"
+    text = f"Хочу из Москвы в Казань {dates} втроём, туда и обратно, не дороже 90000 рублей"
+    fake = ScriptedLlm(
+        {
+            text: {
+                "origin": {"value": "Москва", "span": "из Москвы"},
+                "destination": {"value": "Казань", "span": "в Казань"},
+                "dates": {"date_phrase": dates},
+                "adults": {"value": 3, "span": "втроём"},
+                "return_trip": {"value": True, "span": "туда и обратно"},
+                "budget": {"amount": "90000", "currency": "RUB", "required": True, "span": "не дороже 90000 рублей"},
+            }
+        }
+    )
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(base, "manual", HARNESS_TEXT_OK=text, HARNESS_TOUCH="stars_min=4")
+    assert result["offer_at_start"] is False and result["offer_after_ok"] is False
+    assert result["ok_text_cleared"] is True
+    assert fake.roles() == ["interpreter", "composer"], "ход из формы не вызывает ни Интерпретатор, ни Composer"
+    values = result["form_values"]
+    assert (values["origin"], values["destination"]) == ("Москва", "Казань")
+    assert (values["date_from"], values["date_to"]) == (TRIP_START.isoformat(), TRIP_END.isoformat())
+    assert values["adults"] == "3" and values["return_trip"] is True
+    assert values["budget_amount"] == "90000.00" and values["budget_required"] is True
+    assert values["stars_min"] == "4", "поле, изменённое пользователем в форме, не перезаписано"
+    assert "перенесены в форму" in result["manual_message"]
+    assert result["cards_after_form"] > 0, result["form_reply"]
+
+
+@pytest.mark.req("UI-003", "DEC-08")
+def test_manual_mode_is_offered_when_llm_fails(tmp_path: Path) -> None:
+    fake = ScriptedLlm({}, failure=ChatResult("error", None, "auth_401", 401, 1, 4))
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(
+            base, "manual", HARNESS_TEXT_FAIL="Хочу в Казань", HARNESS_OPEN="offer", HARNESS_FORM_DATES=FORM_DATES
+        )
+    assert result["offer_at_start"] is False
+    assert result["fail_text_kept"] == "Хочу в Казань"
+    assert result["offer_after_fail"] is True and "LLM сейчас недоступен" in result["offer_text"]
+    assert result["structured_open_after"] is True
+    assert result["cards_after_form"] > 0, result["form_reply"]
+    assert set(fake.roles()) == {"interpreter"}, "после сбоя ход из формы к LLM не обращается"

@@ -3,7 +3,8 @@
 LLM (в S2+) только извлекает фразу; разрешает её этот модуль. Результат — `DateExpression` с исходной
 фразой, `reference_datetime`, часовым поясом, правилом и статусом `resolved|ambiguous|unresolved`.
 Даты не придумываются: при недостатке данных — `unresolved`, при нескольких толкованиях — `ambiguous`
-(вопрос пользователю, K-13). Часовой пояс по умолчанию не подставляется (DEC-34 открыт).
+(вопрос пользователю, K-13). DEC-34: опорная местная дата — по часовому поясу пункта отправления; пояс
+по умолчанию (в т. ч. московский) не подставляется.
 """
 
 from __future__ import annotations
@@ -280,6 +281,11 @@ def _resolve(text: str, today: date) -> Resolution:
     return Resolution("unresolved", None, None, "выражение даты не распознано: требуется уточнение")
 
 
+TIMEZONE_UNKNOWN_RULE = (
+    "часовой пояс пункта отправления неизвестен: местная опорная дата неизвестна (DEC-34)"
+)
+
+
 def _resolve_without_timezone(raw_text: str, reference_datetime: datetime) -> Resolution:
     """DATE-001: при неизвестном поясе местная опорная дата лежит в пределах ±1 дня от даты UTC
     (пояса UTC−12…UTC+14). Если толкование одинаково для всех трёх дат («с 1 по 8 марта»), оно от пояса
@@ -294,16 +300,17 @@ def _resolve_without_timezone(raw_text: str, reference_datetime: datetime) -> Re
     )
     if same and first.status in ("resolved", "ambiguous"):
         return replace(first, rule=f"{first.rule}; не зависит от часового пояса (DEC-34)")
-    return Resolution(
-        "unresolved", None, None, "часовой пояс не задан: местная опорная дата неизвестна (DEC-34)"
-    )
+    if same:
+        return first  # фраза не распознана при любой местной дате: дело не в часовом поясе
+    return Resolution("unresolved", None, None, TIMEZONE_UNKNOWN_RULE)
 
 
 def resolve_date_expression(
     raw_text: str, reference_datetime: datetime, timezone_name: str | None
 ) -> tuple[DateExpression, Resolution]:
-    """Разрешает фразу. Без часового пояса пояс не подставляется (DEC-34): фраза принимается, только если
-    её толкование одинаково для любой возможной местной даты, иначе — `unresolved`."""
+    """Разрешает фразу в поясе пункта отправления. Без пояса другой пояс не подставляется (DEC-34):
+    фраза принимается, только если её толкование одинаково для любой возможной местной даты,
+    иначе — `unresolved`."""
     if timezone_name is None:
         resolution = _resolve_without_timezone(raw_text, reference_datetime)
     else:
@@ -359,6 +366,8 @@ class TripDates:
     expressions: tuple[DateExpression, ...]
     question: str | None
     rule: str
+    # DEC-34: толкование зависит от местной даты, а пояс пункта отправления неизвестен.
+    needs_timezone: bool = False
 
 
 def resolve_trip_dates(
@@ -380,6 +389,14 @@ def resolve_trip_dates(
         question = f"Уточните даты: «{date_phrase}» можно понять по-разному ({options})."
         return TripDates("ambiguous", None, None, expressions, question, resolution.rule)
     if resolution.status != "resolved" or resolution.start is None:
+        if resolution.rule == TIMEZONE_UNKNOWN_RULE:
+            question = (
+                f"Уточните даты: «{date_phrase}» зависит от местной даты в пункте отправления, "
+                "а его часовой пояс неизвестен. Назовите город отправления или даты числами."
+            )
+            return TripDates(
+                "unresolved", None, None, expressions, question, resolution.rule, needs_timezone=True
+            )
         question = (
             f"Не удалось определить даты по фразе «{date_phrase}». Назовите даты отъезда и возвращения."
         )

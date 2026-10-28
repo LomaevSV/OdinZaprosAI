@@ -381,6 +381,8 @@ async function ensureSession() {
     $("structured-details").open = false;
   } else if (state.session.llm_mode === "replay") {
     $("llm-notice").textContent = "LLM в режиме Replay: понимаются только заранее записанные фразы.";
+  } else {
+    offerManualMode("LLM не подключён: свободный текст не обрабатывается.");
   }
   renderTrip(state.session.state);
   return state.session;
@@ -410,6 +412,73 @@ function formPayload(form) {
   return payload;
 }
 
+// UI-003: ручной режим «Без LLM» — существующая форма. Ход из формы сервер обрабатывает без LLM
+// (ни Интерпретатора, ни Composer). Уже известные условия поездки переносятся в форму; поля, которые
+// пользователь менял в форме сам, не перезаписываются.
+const touchedFields = new Set();
+
+function requestFormValues(request) {
+  const by = Object.fromEntries((request.constraints || []).map((c) => [c.field, c]));
+  const party = request.party || {};
+  const modes = by.transport_mode && Array.isArray(by.transport_mode.value) ? by.transport_mode.value : [];
+  const required = (field) => Boolean(by[field] && by[field].requiredness === "required");
+  return {
+    origin: request.origin ? request.origin.name : "",
+    destination: request.destination ? request.destination.name : "",
+    date_from: request.date_range ? request.date_range.start : "",
+    date_to: request.date_range ? request.date_range.end : "",
+    adults: party.adults == null ? "" : String(party.adults),
+    children_ages: (party.children_ages || []).join(", "),
+    return_trip: request.return_trip !== false,
+    budget_amount: request.budget ? String(request.budget.amount) : "",
+    budget_required: required("budget_total"),
+    transport_modes: modes.length === 1 ? modes[0] : "",
+    breakfast: Boolean(by.hotel_breakfast && by.hotel_breakfast.value === true),
+    breakfast_required: required("hotel_breakfast"),
+    stars_min: by.hotel_stars_min ? String(by.hotel_stars_min.value) : "",
+    pet: (party.pets || []).length > 0,
+    wishes_tags: (request.wishes_tags || []).join(", "),
+  };
+}
+
+function fillFormFromTrip() {
+  const request = state.trip && state.trip.request;
+  const form = $("trip-form");
+  if (!request || !form.elements) return false;
+  for (const [name, value] of Object.entries(requestFormValues(request))) {
+    const input = form.elements.namedItem(name);
+    if (!input || touchedFields.has(name)) continue;
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = value;
+  }
+  return true;
+}
+
+function openManualMode() {
+  const filled = fillFormFromTrip();
+  const details = $("structured-details");
+  details.open = true;
+  $("manual-offer").hidden = true;
+  if (details.scrollIntoView) details.scrollIntoView({ behavior: "smooth", block: "start" });
+  say("assistant", "Ручной режим без LLM: проверьте условия в форме и нажмите «Подобрать». " +
+    (filled ? "Уже известные условия перенесены в форму. " : "") +
+    "Запрос из формы обрабатывается без LLM.");
+}
+
+function offerManualMode(reason) {
+  const button = el("button", { type: "button", "data-testid": "manual-offer-button" }, "Заполнить форму без LLM");
+  button.addEventListener("click", openManualMode);
+  $("manual-offer").replaceChildren(el("span", {}, `${reason} `), button);
+  $("manual-offer").hidden = false;
+}
+
+$("manual-btn").addEventListener("click", openManualMode);
+for (const type of ["input", "change"]) {
+  $("trip-form").addEventListener(type, (event) => {
+    if (event.target && event.target.name) touchedFields.add(event.target.name);
+  });
+}
+
 async function sendMessage(body) {
   await ensureSession();
   $("progress").hidden = false;
@@ -422,8 +491,16 @@ async function sendMessage(body) {
     say("assistant", turn.assistant_text);
     renderQuestions(turn.questions);
     renderTrip(turn.state);
+    if (body.text && turn.input_mode === "llm_unavailable") {
+      offerManualMode("LLM сейчас недоступен: текст не обработан и сохранён в поле ввода. Можно продолжить без LLM.");
+    } else {
+      $("manual-offer").hidden = true;
+    }
+    return turn;
   } catch (error) {
     say("assistant", `Ошибка: ${error.message}`);
+    if (body.text) offerManualMode("Текст не обработан и сохранён в поле ввода. Можно продолжить без LLM.");
+    return null;
   } finally {
     $("progress").hidden = true;
   }
@@ -431,8 +508,8 @@ async function sendMessage(body) {
 
 $("trip-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  say("user", "Запрос из формы");
-  sendMessage({ form: formPayload(event.target) });
+  say("user", "Запрос из формы (без LLM)");
+  sendMessage({ form: formPayload(event.target) }).then((turn) => { if (turn) touchedFields.clear(); });
 });
 
 $("text-form").addEventListener("submit", (event) => {
@@ -440,7 +517,10 @@ $("text-form").addEventListener("submit", (event) => {
   const value = $("text-input").value.trim();
   if (!value) return;
   say("user", value);
-  sendMessage({ text: value }).then(() => { $("text-input").value = ""; });
+  // UI-003: при недоступном LLM введённый текст не стирается.
+  sendMessage({ text: value }).then((turn) => {
+    if (turn && turn.input_mode !== "llm_unavailable") $("text-input").value = "";
+  });
 });
 
 $("cart-btn").addEventListener("click", async () => {
