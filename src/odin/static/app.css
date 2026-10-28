@@ -1,5 +1,6 @@
 :root { --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d9de; --mock: #a15c00; --ok: #1f7a3a; --bad: #b3261e; --unk: #6b6b70; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--fg); background: #fafafa; }
 .topbar { display: flex; gap: 12px; align-items: center; padding: 10px 20px; background: #fff; border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 20px; margin: 0 12px 0 0; }
@@ -9,14 +10,22 @@ body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, 
 .notice { margin: 8px 20px; padding: 8px 12px; background: #fff7e6; border: 1px solid #f0d9a8; border-radius: 6px; }
 .layout { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(420px, 1.2fr); gap: 16px; padding: 0 20px 20px; }
 .chat, .trip { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
-.messages { max-height: 260px; overflow: auto; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
-.msg { white-space: pre-wrap; margin: 6px 0; padding: 6px 8px; border-radius: 6px; }
-.msg.user { background: #eef3ff; }
-.msg.assistant { background: #f4f4f6; }
-.questions button { margin: 4px 6px 4px 0; }
-.question-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* UI-008: лента как в обычном чате — без собственной прокрутки (прокручивается страница), автор различим. */
+.messages { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.msg { white-space: pre-wrap; margin: 0; padding: 8px 10px; border-radius: 10px; max-width: 92%; overflow-wrap: anywhere; }
+.msg::before { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; white-space: normal; }
+.msg.user { align-self: flex-end; background: #eef3ff; border-bottom-right-radius: 2px; }
+.msg.user::before { content: "Вы"; }
+.msg.assistant { align-self: flex-start; background: #f4f4f6; border-bottom-left-radius: 2px; }
+.msg.assistant::before { content: "О!дин"; }
+.question-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
 .question-options .option { border-color: #3366cc; color: #1f3d7a; background: #f5f8ff; text-align: left; }
 .question-options .option:focus-visible { outline: 2px solid #3366cc; outline-offset: 2px; }
+.question-options .option.selected { background: #3366cc; color: #fff; }
+.question-options .option.stale { border-color: var(--line); color: var(--muted); background: #fafafa; }
+.link-button { padding: 0 4px; border: none; background: none; color: #1f4fb3; text-decoration: underline; font: inherit; }
+.destination-form { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 6px 0 10px; padding: 8px; border: 1px solid #3366cc; border-radius: 6px; background: #f5f8ff; }
+.destination-form label, .destination-form .meta { grid-column: 1 / -1; font-size: 13px; }
 .text-form, .trip-form { margin-top: 8px; }
 .text-form textarea { width: 100%; }
 fieldset { border: 1px solid var(--line); border-radius: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }

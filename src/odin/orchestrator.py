@@ -269,6 +269,11 @@ def _parse_selection_note(note: str | None) -> dict[str, str]:
     return {role: offer_id for role, offer_id in pairs}
 
 
+def _destination_only(form: StructuredForm) -> bool:
+    """Выбор направления нажатием: в форме передано только «куда» (CITY-001/002)."""
+    return form.model_fields_set == {"destination"} and bool(form.destination and form.destination.strip())
+
+
 @dataclass(slots=True)
 class TurnResult:
     state: TripState
@@ -695,6 +700,10 @@ class Orchestrator:
             )
 
         if form is not None:
+            if previous is not None and previous.request is not None and _destination_only(form):
+                return self._interpret_destination(
+                    session_id=session_id, request_id=request_id, form=form, previous=previous
+                )
             return interpret(form)
         if text:
             return self._interpret_text(
@@ -747,6 +756,41 @@ class Orchestrator:
             timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
             previous_ambiguities=remaining,
             previous_date_expressions=list(request.date_expressions),
+        )
+
+    def _interpret_destination(
+        self, *, session_id: str, request_id: str, form: StructuredForm, previous: TripState
+    ) -> InterpretationOutcome:
+        """CITY-002: смена направления нажатием (предложенный город или «Изменить направление»), без LLM.
+
+        Меняется только «куда»; прочие условия (откуда, даты, состав, бюджет, транспорт, пожелания) и
+        незакрытые уточнения диалога сохраняются: фраза даты («послезавтра», «в середине лета») ждёт
+        ответа дальше и не сбрасывается в общий вопрос о датах, как при разборе ручной формы."""
+        request = previous.request
+        assert request is not None and form.destination is not None
+        name = " ".join(form.destination.split())
+        base = request_to_form(request).evolve(destination=name)
+        if request.input_mode == "structured_form":
+            return interpret_structured_form(
+                base, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
+        remaining = [item for item in request.ambiguities if item.field != "destination"]
+        outcome = outcome_from_delta(
+            InterpretationDelta(),
+            text=f"Выбрано направление: {name}",
+            base=base,
+            session_id=session_id,
+            request_id=request_id,
+            reference_datetime=datetime.now(tz=UTC),
+            mode=request.input_mode,
+            previous_constraints=list(request.constraints),
+            timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
+            previous_ambiguities=remaining,
+            previous_date_expressions=list(request.date_expressions),
+        )
+        chosen = outcome.request.destination.name if outcome.request and outcome.request.destination else name
+        return replace(
+            outcome, notes=[f"Направление: {chosen}; прочие условия поездки сохранены", *outcome.notes]
         )
 
     def _interpret_text(

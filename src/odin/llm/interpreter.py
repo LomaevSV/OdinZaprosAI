@@ -175,10 +175,7 @@ def refuse_free_text(*, session_id: str, request_id: str, reason: str | None = N
             "Заполните форму или включите LLM по решению DEC-07."
         )
     else:
-        message = (
-            f"Свободный диалог недоступен: {reason}. "
-            "Повторите сообщение позже или заполните форму — условия не потеряны."
-        )
+        message = f"Свободный диалог недоступен: {reason}. Повторите сообщение позже — условия не потеряны."
     return InterpretationOutcome(
         request=None,
         mode="llm_unavailable",

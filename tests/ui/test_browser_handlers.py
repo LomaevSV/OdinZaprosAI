@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -216,6 +217,9 @@ FAKE_LLM_ENV = {
     "ODIN_LLM_API_KEY": "test-key",
 }
 FORM_DATES = f"{TRIP_START.isoformat()},{TRIP_END.isoformat()}"
+# UI-010: при подключённом LLM ручной режим скрыт из публичного интерфейса; его проверки — по диагностическому
+# адресу «?manual=1» (реализация и API ручного режима не изменены).
+MANUAL_DIAGNOSTIC = "?manual=1"
 
 
 @pytest.mark.req("UI-003", "DEC-08")
@@ -257,7 +261,7 @@ def test_manual_mode_keeps_dialog_parameters_and_does_not_call_llm(tmp_path: Pat
         }
     )
     for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
-        result = _run(base, "manual", HARNESS_TEXT_OK=text, HARNESS_TOUCH="stars_min=4")
+        result = _run(base, "manual", HARNESS_TEXT_OK=text, HARNESS_TOUCH="stars_min=4", HARNESS_SEARCH=MANUAL_DIAGNOSTIC)
     assert result["offer_at_start"] is False and result["offer_after_ok"] is False
     assert result["ok_text_cleared"] is True
     assert fake.roles() == ["interpreter", "composer"], "ход из формы не вызывает ни Интерпретатор, ни Composer"
@@ -282,6 +286,7 @@ def test_manual_mode_is_offered_when_llm_fails(tmp_path: Path) -> None:
             HARNESS_OPEN="offer",
             HARNESS_FORM_DATES=FORM_DATES,
             HARNESS_FORM_FIELDS="origin=Москва,destination=Казань,adults=2",
+            HARNESS_SEARCH=MANUAL_DIAGNOSTIC,
         )
     assert result["offer_at_start"] is False
     assert result["fail_text_kept"] == "Хочу в Казань"
@@ -343,5 +348,94 @@ def test_date_options_are_buttons_and_choice_keeps_trip_without_llm(tmp_path: Pa
     assert (after["dates"]["start"], after["dates"]["end"]) == (choice["date_from"], choice["date_to"])
     assert (after["origin"], after["destination"], after["adults"]) == ("Москва", "Казань", 2)
     assert result["options_after"] == 0 and result["offer_cards_after"] > 0
+    assert result["options_in_assistant_message"] is True, "варианты — в сообщении ассистента (UI-008)"
+    assert result["stale_options_after"] == len(options), "варианты прошлого хода не кликаются"
     assert result["choice_user_message"].startswith("Выбираю даты:")
     assert fake.roles() == ["interpreter", "composer"], "выбор дат не вызывает ни Интерпретатор, ни Composer"
+
+
+# ---------------------------------------------------------------- этап 60: CITY-002, UI-008/009/010
+
+CITY_SCRIPT = {
+    "Хочу на море из Москвы вдвоём": {
+        "origin": {"value": "Москва", "span": "из Москвы"},
+        "adults": {"value": 2, "span": "вдвоём"},
+        "wishes_tags": {"value": ["море"], "span": "на море"},
+    },
+    "послезавтра": {"dates": {"date_phrase": "послезавтра"}},
+    "Нет, лучше Казань": {"unparsed": ["Нет, лучше Казань"]},
+}
+
+
+@pytest.fixture
+def city_dialog(tmp_path: Path) -> tuple[dict[str, Any], ScriptedLlm]:
+    fake = ScriptedLlm(CITY_SCRIPT)
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(
+            base,
+            "city",
+            HARNESS_TEXT="Хочу на море из Москвы вдвоём",
+            HARNESS_TEXT_DATES="послезавтра",
+            HARNESS_TEXT_CHANGE="Нет, лучше Казань",
+            HARNESS_CHANGE_TO="Сочи",
+        )
+    return result, fake
+
+
+@pytest.mark.req("CITY-002")
+def test_destination_can_be_changed_again_and_again(city_dialog: tuple[dict[str, Any], ScriptedLlm]) -> None:
+    result, fake = city_dialog
+    names = result["names"]
+    assert len(names) >= 2 and result["city_group_label"] == 1, "города — кнопки в сообщении с предложением"
+    expected = [names[0], names[1], names[0]]
+    assert [step["destination"] for step in result["steps"]] == expected, "A → B → A (лента и панель)"
+    for step, name in zip(result["steps"], expected, strict=True):
+        assert step["panel_cards"] == len(names) and step["chat_buttons"] == len(names), "список не исчезает"
+        assert step["chat_selected"] == [name]
+    after = result["after_steps"]
+    assert after["origin"] == "Москва" and after["adults"] == 2 and after["date_expressions"] == ["послезавтра"]
+    assert "отъезд" in result["dates_text"] and "«послезавтра»" in result["dates_text"], result["dates_text"]
+    assert result["after_text"] == "Казань", "смена текстом «Нет, лучше Казань»"
+    assert result["change_button"] == "Изменить направление" and result["change_form_visible"] is True
+    assert result["change_requests"] == 0, "кнопка открывает форму, а не отправляет запрос"
+    assert result["after_change_form"]["destination"] == "Сочи" and result["change_form_hidden_after"] is True
+    assert result["change_body"]["form"] == {"destination": "Сочи"}
+    assert fake.roles().count("interpreter") == 3, "клики и «Изменить направление» не вызывают LLM"
+
+
+@pytest.mark.req("UI-008", "UI-009")
+def test_single_chat_feed_without_duplicates(city_dialog: tuple[dict[str, Any], ScriptedLlm]) -> None:
+    result, _fake = city_dialog
+    assert result["questions_panel"] is False, "отдельной панели «Вопрос» нет"
+    messages = result["messages"]
+    roles = [m["role"] for m in messages]
+    assert roles == ["msg user", "msg assistant"] * (len(messages) // 2), "сообщения по очереди, каждое один раз"
+    assert not any(m["text"].startswith("Вопрос:") for m in messages)
+    users = [m["text"] for m in messages if m["role"] == "msg user"]
+    assert users[:2] == ["Хочу на море из Москвы вдвоём", "послезавтра"] and "Нет, лучше Казань" in users
+    assert result["placeholder_initial"].startswith("Например: из Москвы")
+    assert result["placeholder_after_first"] == "Напишите сообщение…"
+    assert result["draft_kept"] == "черновик", "введённый текст не сбрасывается при обновлении интерфейса"
+
+
+def test_chat_feed_has_no_inner_scroll() -> None:
+    css = (Path(__file__).resolve().parents[2] / "src/odin/static/app.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.messages\s*\{([^}]*)\}", css)
+    assert rule is not None and "overflow" not in rule.group(1) and "max-height" not in rule.group(1)
+    html = (Path(__file__).resolve().parents[2] / "src/odin/static/index.html").read_text(encoding="utf-8")
+    assert 'id="questions"' not in html, "вопросы — в ленте, а не в отдельной панели"
+
+
+@pytest.mark.req("UI-010")
+def test_manual_mode_is_hidden_in_public_interface_with_llm(tmp_path: Path) -> None:
+    fake = ScriptedLlm({}, failure=ChatResult("error", None, "auth_401", 401, 1, 4))
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=fake):
+        result = _run(base, "public", HARNESS_TEXT_FAIL="Хочу в Казань")
+    assert result["manual_btn_hidden"] is True and result["form_hidden"] is True
+    assert result["offer_hidden_at_start"] is True and result["offer_hidden_after_fail"] is True
+    assert result["fail_text_kept"] == "Хочу в Казань", "текст при сбое LLM не стирается"
+    notice = result["llm_notice"]
+    assert "передаются выбранному LLM-провайдеру" in notice, "уведомление о передаче данных сохранено"
+    assert "Форма" not in notice and "без LLM" in notice
+    text = " ".join(result["visible_text"])
+    assert "Без LLM" not in text and "Заполнить форму" not in text and "заполните форму" not in text

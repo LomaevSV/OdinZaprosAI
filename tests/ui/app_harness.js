@@ -79,6 +79,7 @@ for (const match of html.matchAll(/<(\w+)[^>]*\sid="([^"]+)"/g)) byId[match[2]] 
 for (const match of html.matchAll(/<(\w+)[^>]*\sid="([^"]+)"[^>]*\shidden[\s>]/g)) byId[match[2]].hidden = true;
 for (const match of html.matchAll(/<button[^>]*\sid="([^"]+)"[^>]*>([^<]*)</g)) byId[match[1]].textContent = match[2];
 for (const match of html.matchAll(/<button[^>]*\sid="([^"]+)"[^>]*\sdisabled[\s>]/g)) byId[match[1]].disabled = true;
+for (const match of html.matchAll(/<(\w+)[^>]*\sid="([^"]+)"[^>]*\splaceholder="([^"]*)"/g)) byId[match[2]].placeholder = match[3];
 const textOf = (id) => (byId[id] ? byId[id].textContent : null);
 
 // Поля формы ручного ввода (UI-003): значения и флажки из разметки, как у браузера при загрузке.
@@ -124,6 +125,8 @@ async function fetchProxy(url, options = {}) {
 
 const sandbox = {
   document, FormData, Node, console, crypto: globalThis.crypto, fetch: fetchProxy,
+  // UI-010: диагностический адрес ручного режима («?manual=1») — только если задан стендом.
+  location: { search: process.env.HARNESS_SEARCH || "" },
   setInterval: () => 0, Date, Number, Object, JSON, Set, Map, Array, String, Boolean, Error, Promise,
 };
 vm.createContext(sandbox);
@@ -154,7 +157,7 @@ function findAll(root, predicate) {
 const byTestid = (root, prefix) => findAll(root, (n) => n.getAttribute && (n.getAttribute("data-testid") || "").startsWith(prefix));
 const destinationCards = () => byTestid(byId.cards, "destination-card");
 // Язык интерфейса: все тексты, которые видит пользователь (включая подсказки title/aria-label).
-const VISIBLE_IDS = ["messages", "questions", "trip-summary", "cards", "selection-bar", "cart-hint", "constraints", "cart", "receipt", "mode-badge", "llm-badge", "data-notice", "llm-notice", "manual-offer", "text-label", "cart-btn", "revision", "progress"];
+const VISIBLE_IDS = ["messages", "questions", "trip-summary", "destination-form", "cards", "selection-bar", "cart-hint", "constraints", "cart", "receipt", "mode-badge", "llm-badge", "data-notice", "llm-notice", "manual-offer", "text-label", "cart-btn", "revision", "progress"];
 function visibleText() {
   const parts = [];
   for (const id of VISIBLE_IDS) {
@@ -178,6 +181,27 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     out.llm_badge = textOf("llm-badge");
     out.structured_open = byId["structured-details"] ? byId["structured-details"].open !== false : null;
     out.post_requests = requests.filter((r) => r.method === "POST").map((r) => r.path.replace(/\/(s|t)-[0-9a-f]+/g, "/$1-*"));
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
+  if (process.env.HARNESS_MODE === "public") {
+    // UI-010: в публичном интерфейсе с LLM нет кнопки «Без LLM», формы и предложений ручного режима.
+    out.manual_btn_hidden = byId["manual-btn"].hidden;
+    out.form_hidden = byId["structured-details"].hidden;
+    out.offer_hidden_at_start = byId["manual-offer"].hidden;
+    out.llm_notice = textOf("llm-notice");
+    if (process.env.HARNESS_TEXT_FAIL) {
+      const shown = messages().length;
+      byId["text-input"].value = process.env.HARNESS_TEXT_FAIL;
+      await byId["text-form"].dispatch("submit");
+      await until(() => messages().length >= shown + 2 && byId.progress.hidden, "text turn");
+      await sleep(50);
+      out.fail_reply = messages().slice(shown + 1).join(" | ");
+      out.fail_text_kept = byId["text-input"].value;
+      out.offer_hidden_after_fail = byId["manual-offer"].hidden;
+    }
+    out.visible_text = visibleText();
     process.stdout.write(JSON.stringify(out) + "\n");
     return;
   }
@@ -249,12 +273,14 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
 
   if (process.env.HARNESS_MODE === "dates") {
     // DATE-003: варианты дат — кнопки; выбор без LLM сохраняет прочие условия, двойной клик — один запрос.
-    const optionButtons = () => byTestid(byId.questions, "question-option");
+    // UI-008: варианты дат — внутри сообщения ассистента в ленте; варианты прошлых ходов не кликаются.
+    const optionButtons = () => byTestid(byId.messages, "question-option").filter((b) => !b.disabled);
     byId["text-input"].value = process.env.HARNESS_TEXT;
     await byId["text-form"].dispatch("submit");
     await until(() => optionButtons().length > 0 && byId.progress.hidden, "date options");
     out.options = optionButtons().map((b) => ({ id: b.getAttribute("data-option-id"), label: b.textContent, title: b.title }));
-    out.options_group_label = findAll(byId.questions, (n) => n.getAttribute && n.getAttribute("role") === "group").map((n) => n.getAttribute("aria-label"));
+    out.options_group_label = findAll(byId.messages, (n) => n.getAttribute && n.getAttribute("role") === "group").map((n) => n.getAttribute("aria-label"));
+    out.options_in_assistant_message = byTestid(byId.messages, "msg-assistant").some((m) => byTestid(m, "question-option").length > 0);
     const button = optionButtons()[1];
     const posts = count("POST", "/messages");
     await Promise.all([button.dispatch("click"), button.dispatch("click")]);
@@ -264,6 +290,7 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
     const request = state_request();
     out.after_choice = { origin: request.origin.name, destination: request.destination.name, adults: request.party.adults, dates: request.date_range };
     out.options_after = optionButtons().length;
+    out.stale_options_after = byTestid(byId.messages, "question-option").filter((b) => b.disabled).length;
     out.offer_cards_after = selectableCards().length;
     out.choice_user_message = messages().find((m) => m.startsWith("Выбираю даты:"));
     out.visible_text = visibleText();
@@ -302,6 +329,77 @@ const state_request = () => { const current = vm.runInContext("state", sandbox);
       await until(() => count("POST", "/messages") > before && byId.progress.hidden && state_request().destination.name !== out.after_click.destination, "second destination");
       out.after_keyboard = { origin: state_request().origin && state_request().origin.name, destination: state_request().destination.name, card_text: name };
     }
+    out.visible_text = visibleText();
+    process.stdout.write(JSON.stringify(out) + "\n");
+    return;
+  }
+
+  if (process.env.HARNESS_MODE === "city") {
+    // CITY-002: направление меняется на любом этапе: A → B → A нажатием (в ленте и в панели), текстом и
+    // кнопкой «Изменить направление»; список не исчезает. UI-008/009: одна лента без дублей, подсказка поля.
+    const destination = () => (state_request() && state_request().destination ? state_request().destination.name : null);
+    const posts = () => count("POST", "/messages");
+    const cityButtons = () => byTestid(byId.messages, "city-option");
+    out.placeholder_initial = byId["text-input"].placeholder;
+    out.questions_panel = Boolean(byId.questions);
+    const sayText = async (value) => {
+      const sent = posts();
+      byId["text-input"].value = value;
+      await byId["text-form"].dispatch("submit");
+      await until(() => posts() > sent && byId.progress.hidden, "text turn");
+      await sleep(50);
+    };
+    const settle = async (sent, name) => {
+      await until(() => posts() > sent && byId.progress.hidden && destination() === name, `destination ${name}`);
+      await sleep(30);
+      return { destination: destination(), panel_cards: destinationCards().length, chat_buttons: cityButtons().length, chat_selected: cityButtons().filter((b) => b.classList.contains("selected")).map((b) => b.textContent) };
+    };
+    const viaChat = async (name) => {
+      const sent = posts();
+      await cityButtons().find((b) => b.textContent === name).dispatch("click");
+      return settle(sent, name);
+    };
+    const viaPanel = async (name) => {
+      const sent = posts();
+      await destinationCards().find((c) => c.getAttribute("data-candidate-name") === name).dispatch("click");
+      return settle(sent, name);
+    };
+    await sayText(process.env.HARNESS_TEXT);
+    out.placeholder_after_first = byId["text-input"].placeholder;
+    await until(() => destinationCards().length > 1 && cityButtons().length > 1, "destination options");
+    const names = destinationCards().map((c) => c.getAttribute("data-candidate-name"));
+    out.names = names;
+    out.city_group_label = findAll(byId.messages, (n) => n.getAttribute && n.getAttribute("aria-label") === "Предложенные направления").length;
+    if (process.env.HARNESS_TEXT_DATES) {
+      await sayText(process.env.HARNESS_TEXT_DATES);
+      out.dates_question = byId.messages.children.slice(-1)[0].textContent;
+    }
+    byId["text-input"].value = "черновик";
+    out.steps = [await viaChat(names[0])];
+    out.draft_kept = byId["text-input"].value;
+    out.steps.push(await viaPanel(names[1]), await viaChat(names[0]));
+    const request = state_request();
+    out.after_steps = { origin: request.origin && request.origin.name, adults: request.party.adults, dates: request.date_range, date_expressions: request.date_expressions.map((e) => e.raw_text) };
+    out.dates_text = byTestid(byId["trip-summary"], "trip-dates").map((n) => n.textContent)[0];
+    if (process.env.HARNESS_TEXT_CHANGE) {
+      await sayText(process.env.HARNESS_TEXT_CHANGE);
+      out.after_text = destination();
+    }
+    // «Изменить направление» рядом с текущим городом: форма без LLM, город вводится вручную.
+    const change = byTestid(byId["trip-summary"], "change-destination")[0];
+    out.change_button = change ? change.textContent : null;
+    if (change) {
+      const sent = posts();
+      await change.dispatch("click");
+      out.change_form_visible = !byId["destination-form"].hidden;
+      out.change_requests = posts() - sent;
+      byId["destination-input"].value = process.env.HARNESS_CHANGE_TO || "Сочи";
+      await byId["destination-form"].dispatch("submit");
+      out.after_change_form = await settle(sent, process.env.HARNESS_CHANGE_TO || "Сочи");
+      out.change_form_hidden_after = byId["destination-form"].hidden;
+      out.change_body = requests.filter((r) => r.method === "POST" && r.path.endsWith("/messages")).slice(-1)[0].body;
+    }
+    out.messages = byId.messages.children.map((child) => ({ role: child.className, text: child.textContent }));
     out.visible_text = visibleText();
     process.stdout.write(JSON.stringify(out) + "\n");
     return;

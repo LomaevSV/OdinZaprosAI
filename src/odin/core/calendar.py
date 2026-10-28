@@ -120,6 +120,33 @@ _PERIOD_SEASON = re.compile(
     + _W1
     + _YEAR
 )
+# DATE-005: часть сезона («в середине лета», «в конце зимы», «ближе к осени») — приблизительный период.
+_SEASON_GENITIVE = {"весны": "весн", "лета": "лет", "осени": "осен", "зимы": "зим"}
+_SEASON_MONTHS = {"весн": (3, 4, 5), "лет": (6, 7, 8), "осен": (9, 10, 11), "зим": (12, 1, 2)}
+_PERIOD_SEASON_PART = re.compile(
+    _W0
+    + r"(?:в|во)\s+(?P<part>начале|середине|разгаре|разгар|конце|первой\s+половине|второй\s+половине)\s+"
+    + r"(?:(?P<next>следующ\w+)\s+|(?:этого|нынешнего)\s+)?(?P<season>лета|зимы|весны|осени)"
+    + _W1
+    + _YEAR
+)
+# «ближе к осени» — конец предыдущего сезона (лета).
+_TOWARD_SEASON = {"весне": "зим", "лету": "весн", "осени": "лет", "зиме": "осен"}
+_PERIOD_TOWARD = re.compile(_W0 + r"ближе\s+к\s+(?P<toward>весне|лету|осени|зиме)" + _W1 + _YEAR)
+_MONTHS_NOMINATIVE = (
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
+)
 _PART_DAYS = {
     "начале": (1, 10),
     "середине": (11, 20),
@@ -144,6 +171,8 @@ class Resolution:
     period_kind: str | None = None
     # Самая ранняя допустимая дата отъезда для периода (местное «завтра» в пункте отправления).
     not_before: date | None = None
+    # DATE-005: принятое толкование приблизительного периода («середина лета — июль»), для пояснения.
+    note: str | None = None
 
 
 def _local_today(reference: datetime, timezone_name: str) -> date:
@@ -239,14 +268,48 @@ def _weekend_in(year: int, month: int, *, last: bool) -> date:
     return _weekend_after(date(year, month, 1))
 
 
+def _season_part(stem: str, part: str) -> tuple[Callable[[int], tuple[date, date]], str]:
+    """DATE-005: часть сезона → построитель границ по году начала сезона и пояснение толкования."""
+    months = _SEASON_MONTHS[stem]
+
+    def at(year: int, index: int) -> tuple[int, int]:
+        month = months[index]
+        return (year + 1 if month < months[0] else year), month
+
+    def build(year: int) -> tuple[date, date]:
+        if part == "первой половине":
+            (y1, m1), (y2, m2) = at(year, 0), at(year, 1)
+            return date(y1, m1, 1), date(y2, m2, 15)
+        if part == "второй половине":
+            (y1, m1), (y2, m2) = at(year, 1), at(year, 2)
+            return date(y1, m1, 16), date(y2, m2, _last_day(y2, m2))
+        index = {"начале": 0, "конце": 2}.get(part, 1)
+        y, m = at(year, index)
+        return date(y, m, 1), date(y, m, _last_day(y, m))
+
+    genitive = next(key for key, value in _SEASON_GENITIVE.items() if value == stem)
+    if part == "первой половине":
+        note = f"первая половина {genitive} — с 1 {MONTHS_GENITIVE[months[0]]} по 15 {MONTHS_GENITIVE[months[1]]}"
+    elif part == "второй половине":
+        note = f"вторая половина {genitive} — с 16 {MONTHS_GENITIVE[months[1]]} до конца {MONTHS_GENITIVE[months[2]]}"
+    else:
+        index = {"начале": 0, "конце": 2}.get(part, 1)
+        word = {0: "начало", 2: "конец"}.get(index, "середина")
+        note = f"{word} {genitive} — {_MONTHS_NOMINATIVE[months[index] - 1]}"
+    return build, note
+
+
 def _period(phrase: str, today: date) -> Resolution | None:
     """DATE-003: «в ноябре», «в конце ноября», «в середине января», «последние выходные марта», «летом» —
     ограничение на даты. Даты отъезда здесь не выбираются: их выбирает пользователь из предложенных окон.
+    DATE-005: части сезона («в середине лета», «в конце зимы», «ближе к осени») — приблизительный период
+    с пояснением принятого толкования.
 
     Без года — ближайший период, в котором ещё можно уехать (не раньше местного «завтра»)."""
     earliest = today + timedelta(days=1)
     build: Callable[[int], tuple[date, date]]
     kind, base_year, roll = "range", today.year, False
+    note: str | None = None
     if match := _PERIOD_WEEKEND.search(phrase):
         month, last = _month_of(match), match["which"] == "последние"
 
@@ -263,6 +326,18 @@ def _period(phrase: str, today: date) -> Resolution | None:
         def build(year: int) -> tuple[date, date]:
             return date(year, month, first), date(year, month, min(last_day, _last_day(year, month)))
 
+    elif (match := _PERIOD_SEASON_PART.search(phrase)) or (match := _PERIOD_TOWARD.search(phrase)):
+        toward = match.groupdict().get("toward")
+        if toward:
+            stem, part = _TOWARD_SEASON[toward], "конце"
+        else:
+            stem, part = _SEASON_GENITIVE[match["season"]], " ".join(match["part"].split())
+            roll = bool(match["next"])
+        build, note = _season_part(stem, part)
+        if toward:
+            note = f"«ближе к {toward}» — это {note.replace(' — ', ', ')}"
+        if stem == "зим" and today.month <= 2:
+            base_year -= 1  # январь–февраль: идущая зима началась в декабре прошлого года
     elif match := _PERIOD_SEASON.search(phrase):
         stem = next(key for key in _SEASONS if match["season"].startswith(key))
         first_month, last_month = _SEASONS[stem]
@@ -302,9 +377,9 @@ def _period(phrase: str, today: date) -> Resolution | None:
     effective = start if kind == "weekend" else max(start, earliest)
     rule = (
         f"период «{label}» {effective.isoformat()}–{end.isoformat()} ({year_rule}): ограничение на даты, "
-        "конкретные даты выбирает пользователь (DATE-003)"
+        "конкретные даты выбирает пользователь (DATE-003)" + (f"; толкование: {note}" if note else "")
     )
-    return Resolution("period", effective, end, rule, period_kind=kind, not_before=earliest)
+    return Resolution("period", effective, end, rule, period_kind=kind, not_before=earliest, note=note)
 
 
 def nights_word(nights: int) -> str:
@@ -623,20 +698,39 @@ def nights_value(raw_text: str, *, bare_count: bool = False) -> tuple[int | None
     return None, "unresolved", "длительность не распознана"
 
 
-_RELATIVE_WORD = re.compile(_W0 + r"(послезавтра|завтра|сегодня)" + _W1)
+_RELATIVE_WORD = re.compile(
+    _W0
+    + r"(послезавтра|завтра|сегодня|через\s+(?:(?:\d{1,2}|"
+    + "|".join(NUMBER_WORDS)
+    + r")\s+)?(?:дн(?:я|ей)|недел[юи]))"
+    + _W1
+)
+
+
+def is_relative_phrase(phrase: str) -> bool:
+    """«Завтра», «послезавтра», «сегодня», «через два дня» — фраза, отсчитываемая от опорной даты."""
+    return bool(_RELATIVE_WORD.fullmatch(" ".join(phrase.lower().replace("ё", "е").split())))
 
 
 def literal_date_phrase(text: str) -> str | None:
     """DATE-002: дословная фраза даты из сообщения, если она единственная и однозначна по форме:
-    «завтра»/«послезавтра»/«сегодня» или период («в ноябре», «летом»). Нужна, когда модель вернула
-    вычисленную дату («29 октября») вместо цитаты: даты считает календарь, а не модель."""
+    «завтра»/«послезавтра»/«сегодня»/«через два дня» или период («в ноябре», «летом», «в середине лета»).
+    Нужна, когда модель вернула вычисленную дату («29 октября») вместо цитаты или не вернула фразу даты
+    (DATE-004): даты считает календарь, а не модель."""
     phrase = " ".join(text.lower().replace("ё", "е").split())
-    relative = {match[1] for match in _RELATIVE_WORD.finditer(phrase)}
+    relative = {" ".join(match[1].split()) for match in _RELATIVE_WORD.finditer(phrase)}
     if len(relative) == 1:
         return relative.pop()
     if relative or _DAY_MONTH.search(phrase) or _NUMERIC.search(phrase) or _ISO.search(phrase):
         return None
-    for pattern in (_PERIOD_WEEKEND, _PERIOD_PART, _PERIOD_SEASON, _PERIOD_MONTH):
+    for pattern in (
+        _PERIOD_WEEKEND,
+        _PERIOD_PART,
+        _PERIOD_SEASON_PART,
+        _PERIOD_TOWARD,
+        _PERIOD_SEASON,
+        _PERIOD_MONTH,
+    ):
         found = [match.group(0).strip() for match in pattern.finditer(phrase)]
         if len(found) == 1:
             return found[0]
@@ -693,6 +787,9 @@ def _period_dates(
         start_weekday = None  # у выходных день отъезда задан самим периодом
     windows = trip_windows(resolution, nights, start_weekday)
     period = f"{format_day(resolution.start)} – {format_day(resolution.end)}"
+    if resolution.note:
+        # DATE-005: приблизительный период — принятое толкование показывается, а не выдаётся за единственное.
+        period = f"{period}; понимаю так: {resolution.note}"
     departure = f" с отъездом в {_WEEKDAY_ACCUSATIVE[start_weekday]}" if start_weekday is not None else ""
     if windows:
         same = {(end - start).days for start, end in windows}

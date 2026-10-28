@@ -33,7 +33,7 @@ from odin.contracts.trip import (
 )
 from odin.core import calendar
 from odin.llm.interpreter import InterpretationOutcome, interpret_structured_form
-from odin.tools.mock_data import DEMO_CATALOG, normalize_city
+from odin.tools.mock_data import DEMO_CATALOG, DEMO_PLACES, normalize_city
 
 INTERPRETER_SCHEMA_VERSION = "1.0.0"
 
@@ -666,6 +666,94 @@ def pending_from(ambiguities: list[Ambiguity] | None) -> tuple[str | None, Ambig
     return nights, children
 
 
+def _city_mention_pattern(name: str) -> str:
+    """Строгий шаблон названия для резервного распознавания (CITY-002): название целиком или основа
+    с обычным падежным окончанием («Казани», «Калининграде»); «сочный» за «Сочи» не принимается."""
+    word = _norm(name)
+    if re.search(r"[-\s]", word):
+        return _city_pattern(word)
+    stem = word[:-1] if word[-1] in _VOWELS + "ьй" else word
+    endings = r"(?:а|у|е|и|ы|ь|ью|ом|ем|ой|ю|я)?"
+    return _WORD_START + "(?:" + re.escape(word) + "|" + re.escape(stem) + endings + ")" + _WORD_END
+
+
+_NEGATED_BEFORE = re.compile(r"(?:^|[\s,.;:!?()])(?:не|нет|кроме|вместо)\s+(?:(?:в|во|на|до)\s+)?$")
+
+
+def _delta_is_empty(delta: InterpretationDelta) -> bool:
+    return all(
+        getattr(delta, name) in (None, []) for name in InterpretationDelta.model_fields if name != "unparsed"
+    )
+
+
+def _destination_fallback(
+    delta: InterpretationDelta,
+    text: str,
+    values: dict[str, Any],
+    previous_ambiguities: list[Ambiguity] | None = None,
+) -> tuple[str, str] | None:
+    """CITY-002: модель не вернула ни «откуда», ни «куда», но в неразобранном фрагменте (или во всём
+    сообщении, если модель ничего не извлекла) назван ровно один известный город без роли «откуда» и без
+    отрицания («Нет, лучше Казань»). Тогда это новое направление. Иначе — ничего не угадывается.
+    Пока город отправления неизвестен или о нём задан вопрос, голый город может быть ответом «откуда» —
+    роль не угадывается."""
+    if delta.destination is not None or delta.origin is not None or not values.get("origin"):
+        return None
+    if any(
+        item.field == "origin" or item.ambiguity_id == DATES_TZ_PENDING_ID
+        for item in previous_ambiguities or []
+    ):
+        return None
+    sources = [fragment for fragment in delta.unparsed if span_in_text(fragment, text)]
+    if _delta_is_empty(delta):
+        sources.append(text)
+    origin = normalize_city(values.get("origin"))
+    found: dict[str, str] = {}
+    rejected: set[str] = set()
+    for source in sources:
+        span = _norm(source)
+        for place in DEMO_PLACES:
+            names = {place.name, *(alias for alias in place.aliases if re.search(r"[а-я]", alias))}
+            for name in names:
+                for match in re.finditer(_city_mention_pattern(name), span):
+                    role = _roles_at(span, [match.start()])[0]
+                    if role in ("origin", "not_destination", "not_origin") or _NEGATED_BEFORE.search(
+                        span[: match.start()]
+                    ):
+                        rejected.add(place.name)
+                    else:
+                        found.setdefault(place.name, source.strip()[:300])
+    chosen = [name for name in found if name not in rejected and (origin is None or name != origin.name)]
+    if len(chosen) != 1:
+        return None
+    name = chosen[0]
+    current = normalize_city(values.get("destination"))
+    if current is not None and current.name == name:
+        return None
+    return name, found[name]
+
+
+def _date_fallback(
+    delta: InterpretationDelta, text: str, values: dict[str, Any]
+) -> tuple[str, str | None] | None:
+    """DATE-004/005: модель не вернула фразу даты. Дословная фраза даты берётся из неразобранного
+    фрагмента; относительная («послезавтра», «через два дня») — и из всего сообщения, пока даты поездки
+    ещё не известны. «Сегодня» без явной привязки к поездке не используется."""
+    if delta.dates is not None and delta.dates.date_phrase:
+        return None
+    for fragment in delta.unparsed:
+        if not span_in_text(fragment, text):
+            continue
+        literal = calendar.literal_date_phrase(fragment)
+        if literal is not None and span_in_text(literal, text):
+            return literal, fragment
+    if values.get("date_from") is None:
+        literal = calendar.literal_date_phrase(text)
+        if literal is not None and literal != "сегодня" and calendar.is_relative_phrase(literal):
+            return literal, None
+    return None
+
+
 def apply_delta(
     delta: InterpretationDelta,
     *,
@@ -743,6 +831,12 @@ def apply_delta(
     if check("destination", delta.destination):
         assert delta.destination is not None
         values["destination"] = delta.destination.value.strip()
+    used_fragments: set[str] = set()
+    if (city := _destination_fallback(delta, text, values, previous_ambiguities)) is not None:
+        values["destination"], fragment = city
+        used_fragments.add(fragment)
+        report.accepted.append("destination")
+        report.notes.append(f"Направление изменено: «{city[0]}» (по фразе «{fragment[:120]}»)")
     if check("adults", delta.adults):
         assert delta.adults is not None
         values["adults"] = delta.adults.value
@@ -825,7 +919,11 @@ def apply_delta(
     has_dates = base.date_from is not None or pending_dates is not None
     bare_count = awaiting_nights or (has_dates and bool(_STAY_RE.search(_norm(text))))
     dates = delta.dates
-    used_fragments: set[str] = set()
+    if (found := _date_fallback(delta, text, values)) is not None:
+        literal, fragment = found
+        dates = DatesValue(date_phrase=literal, nights_phrase=dates.nights_phrase if dates else None)
+        if fragment is not None:
+            used_fragments.add(fragment)
     if (dates is None or not dates.nights_phrase) and bare_count:
         for fragment in delta.unparsed:
             if span_in_text(fragment, text) and calendar.nights_value(fragment, bare_count=True)[0]:
@@ -1296,7 +1394,11 @@ def outcome_from_delta(
         request=request,
         mode=mode,
         questions=questions,
-        notes=[*notes, *outcome.notes],
+        # Фраза даты понята (ждёт длительности, возвращения или выбора варианта): «даты не указаны» неверно.
+        notes=[
+            *notes,
+            *(note for note in outcome.notes if not (calendar_dates and note.startswith("даты не указаны"))),
+        ],
         decisions=outcome.decisions,
     )
 

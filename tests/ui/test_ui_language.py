@@ -126,3 +126,17 @@ def test_date_option_buttons_are_russian(tmp_path: Path) -> None:
         result = _run(base, "dates", HARNESS_TEXT=text)
     texts = [*(o["label"] for o in result["options"]), *(o["title"] for o in result["options"])]
     assert english_words([*texts, *result["options_group_label"], *result["visible_text"]]) == []
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js недоступен: UI-стенд не запускается")
+@pytest.mark.req("CITY-002", "UI-008", "UI-010")
+def test_chat_feed_and_destination_change_are_russian(tmp_path: Path) -> None:
+    from tests.llm_fakes import ScriptedLlm
+    from tests.ui.test_browser_handlers import CITY_SCRIPT, FAKE_LLM_ENV
+
+    for base in _serve(tmp_path, FAKE_LLM_ENV, llm=ScriptedLlm(CITY_SCRIPT)):
+        city = _run(base, "city", HARNESS_TEXT="Хочу на море из Москвы вдвоём", HARNESS_TEXT_DATES="послезавтра")
+        public = _run(base, "public")
+    observed = [*city["visible_text"], *public["visible_text"], public["llm_notice"]]
+    assert any("Изменить направление" in text for text in observed)
+    assert english_words(observed) == []

@@ -159,9 +159,9 @@ def test_interface_structure_has_required_elements() -> None:
     html = (ROOT / "src" / "odin" / "static" / "index.html").read_text(encoding="utf-8")
     parser = _Collector()
     parser.feed(html)
+    # UI-008 (этап 60): вопросы и варианты выбора — в единой ленте «messages», отдельной панели нет.
     required = {
         "messages",
-        "questions",
         "structured-form",
         "trip-panel",
         "progress",

@@ -37,14 +37,54 @@ async function call(method, path, body) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = payload.message || `сервер вернул ошибку (код ${response.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
 
+// UI-008: единая лента диалога, как в обычном чате: каждое сообщение — один раз, по порядку; варианты выбора
+// (города, даты) — внутри сообщения, к которому относятся. Своей прокрутки у ленты нет: прокручивается страница.
 function say(role, message) {
-  $("messages").append(el("div", { class: `msg ${role}` }, message));
-  $("messages").scrollTop = $("messages").scrollHeight;
+  const node = el("div", { class: `msg ${role}`, "data-testid": `msg-${role}` }, message);
+  $("messages").append(node);
+  if (role === "user") markDialogStarted();
+  if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+  return node;
+}
+
+// UI-009: длинный пример — только до первого сообщения новой поездки; введённый текст не трогается.
+const PLACEHOLDER_SHORT = "Напишите сообщение…";
+
+function markDialogStarted() {
+  $("text-input").placeholder = PLACEHOLDER_SHORT;
+}
+
+function busyNotice() {
+  say("assistant", "Подождите: предыдущий запрос ещё обрабатывается, затем повторите действие.");
+}
+
+// Конфликт ревизии (409) не «молчит»: понятное сообщение, обновлённая поездка и кнопка «Повторить».
+function sayRetry(message, retry) {
+  const node = say("assistant", message);
+  if (!retry) return node;
+  const button = el("button", { type: "button", class: "option retry", "data-testid": "retry-button" }, "Повторить");
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    retry();
+  });
+  node.append(el("div", { class: "question-options" }, button));
+  return node;
+}
+
+async function refreshTrip() {
+  if (!state.trip) return;
+  try {
+    renderTrip(await call("GET", `${API}/trips/${state.trip.trip_id}`));
+  } catch (error) {
+    // Обновить не удалось: сообщение об ошибке уже показано, повтор отправит актуальную ревизию сервера.
+  }
 }
 
 const LLM_MODE_LABELS = { live: "подключён", off: "отключён", replay: "Replay (записанные ответы)" };
@@ -126,6 +166,62 @@ function card(title, subtitle, price, source, mode, extra = []) {
   );
 }
 
+const DATES_PERIOD_PENDING_ID = "amb-llm-dates-period";
+
+function dayText(iso) {
+  const [year, month, day] = String(iso).split("-");
+  return `${day}.${month}.${year}`;
+}
+
+// DATE-004/005: понятая, но ещё не завершённая дата не выглядит как «даты не заданы».
+function datesText(request) {
+  if (request.date_range) return `${request.date_range.start} — ${request.date_range.end}`;
+  const ambiguities = request.ambiguities || [];
+  const expressions = request.date_expressions || [];
+  const departure = expressions.filter((e) => e.status === "resolved" && e.resolved_start && !e.resolved_end).slice(-1)[0];
+  if (departure) return `отъезд ${dayText(departure.resolved_start)} («${departure.raw_text}»), возвращение уточняется`;
+  const period = ambiguities.find((a) => a.ambiguity_id === DATES_PERIOD_PENDING_ID);
+  if (period) {
+    const phrase = (expressions.filter((e) => e.status === "ambiguous").slice(-1)[0] || {}).raw_text;
+    const label = phrase ? `период «${phrase}»` : "период поездки";
+    return (period.options || []).length ? `${label} — выберите вариант дат в чате` : `${label} — уточняется длительность`;
+  }
+  return "даты не заданы";
+}
+
+// CITY-002: «Изменить направление» — небольшая форма рядом с поездкой и список предложенных городов.
+function openDestinationChange() {
+  const form = $("destination-form");
+  form.hidden = false;
+  const section = $("destination-section-anchor");
+  const hasCandidates = Boolean(state.trip && (state.trip.candidate_destinations || []).length);
+  $("destination-hint").textContent = hasCandidates
+    ? "Введите город или выберите из предложенных направлений ниже и в чате. Прочие условия поездки сохранятся."
+    : "Введите город. Прочие условия поездки (откуда, даты, состав, бюджет) сохранятся.";
+  if (hasCandidates && section && section.scrollIntoView) section.scrollIntoView({ block: "nearest" });
+  if ($("destination-input").focus) $("destination-input").focus();
+}
+
+function closeDestinationChange() {
+  $("destination-form").hidden = true;
+}
+
+$("destination-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = $("destination-input").value.trim();
+  if (!name) {
+    say("assistant", "Укажите город назначения.");
+    return;
+  }
+  chooseDestination({ place: { name } }).then((turn) => {
+    if (turn) {
+      $("destination-input").value = "";
+      closeDestinationChange();
+    }
+  });
+});
+$("destination-cancel").addEventListener("click", closeDestinationChange);
+
 function renderTrip(trip) {
   state.trip = trip;
   state.revision = trip.revision;
@@ -135,11 +231,14 @@ function renderTrip(trip) {
   const request = trip.request;
   if (request) {
     const party = request.party.adults ? `${request.party.adults} взр.` + (request.party.children_ages.length ? `, дети: ${request.party.children_ages.join(", ")}` : "") : "состав не указан";
-    const dates = request.date_range ? `${request.date_range.start} — ${request.date_range.end}` : "даты не заданы";
-    summary.append(
-      el("p", {}, `${request.origin ? request.origin.name : "?"} → ${request.destination ? request.destination.name : "направление не задано"}`),
-      el("p", {}, `Даты: ${dates}. Гости: ${party}.`),
-    );
+    const route = el("p", { "data-testid": "trip-route" },
+      `${request.origin ? request.origin.name : "?"} → ${request.destination ? request.destination.name : "направление не задано"}`);
+    // CITY-002: направление меняется на любом этапе — кнопка рядом с текущим городом (ход без LLM).
+    const change = el("button", { type: "button", class: "link-button", "data-testid": "change-destination", "aria-controls": "destination-form" },
+      request.destination ? "Изменить направление" : "Выбрать направление");
+    change.addEventListener("click", openDestinationChange);
+    route.append(" ", change);
+    summary.append(route, el("p", { "data-testid": "trip-dates" }, `Даты: ${datesText(request)}. Гости: ${party.replace(/\.$/, "")}.`));
   }
   const plan = trip.plan;
   if (plan) {
@@ -205,9 +304,9 @@ function renderTrip(trip) {
   if (candidates.length) {
     // CITY-001: предложенные направления выбираются нажатием или клавиатурой; выбирается только «куда».
     const chosenName = trip.request && trip.request.destination ? trip.request.destination.name : null;
-    const section = el("section", { class: "offer-section destinations", "data-testid": "destination-section", "aria-labelledby": "destination-title" },
+    const section = el("section", { class: "offer-section destinations", id: "destination-section-anchor", "data-testid": "destination-section", "aria-labelledby": "destination-title" },
       sectionTitle("destination-title", "Предложенные направления", candidates.length),
-      el("p", { class: "meta" }, "Нажмите на направление, чтобы выбрать его как пункт назначения («куда»). Город отправления не меняется."));
+      el("p", { class: "meta" }, "Нажмите на направление, чтобы выбрать его как пункт назначения («куда»). Город отправления не меняется; направление можно сменить в любой момент."));
     for (const candidate of candidates) {
       const node = el("div", { class: "card", "data-testid": "destination-card" },
         el("div", {}, el("strong", {}, candidate.place.name), " ", modeBadge(candidate.source.data_mode)),
@@ -232,6 +331,7 @@ function renderTrip(trip) {
   }
   updateCartButton(trip);
   renderSelectionBar(trip);
+  markChosenCities(trip);
 }
 
 function renderSelectionBar(trip) {
@@ -303,6 +403,7 @@ function makeDestinationSelectable(node, candidate, selected) {
   node.classList.add("selectable");
   if (selected) node.classList.add("selected");
   node.setAttribute("data-candidate-id", candidate.candidate_id);
+  node.setAttribute("data-candidate-name", candidate.place.name);
   node.setAttribute("role", "button");
   node.setAttribute("tabindex", "0");
   node.setAttribute("aria-pressed", selected ? "true" : "false");
@@ -316,21 +417,27 @@ function makeDestinationSelectable(node, candidate, selected) {
   });
 }
 
-// CITY-001: выбор направления — ход с одним полем «куда»; сервер дополняет им известные условия поездки
-// (город отправления, даты, состав не теряются). Ход без LLM: платных вызовов нет.
+// CITY-001/002: выбор направления — ход с одним полем «куда»; сервер дополняет им известные условия поездки
+// (город отправления, даты, состав, незакрытые уточнения не теряются). Ход без LLM: платных вызовов нет.
+// Направление меняется на любом этапе: A → B → A, после уточнений, плана и корзины (корзина — недействительна).
 async function chooseDestination(candidate) {
-  if (!state.trip || state.busy) return;
+  if (!state.trip) return null;
+  if (state.busy) {
+    busyNotice();
+    return null;
+  }
   const name = candidate.place.name;
   const current = state.trip.request && state.trip.request.destination;
   if (current && current.name === name) {
     say("assistant", `Направление «${name}» уже выбрано.`);
-    return;
+    return null;
   }
   state.busy = true;
   try {
     say("user", `Выбираю направление (куда): ${name}`);
-    const turn = await sendMessage({ form: { destination: name } });
+    const turn = await sendMessage({ form: { destination: name } }, () => chooseDestination(candidate));
     if (turn) resetCart();
+    return turn;
   } finally {
     state.busy = false;
   }
@@ -377,28 +484,55 @@ function resetCart() {
   $("cart").replaceChildren();
 }
 
-// DATE-003: предложенные варианты дат — кнопки. Это предложения, а не бронь: цены и наличие — после выбора.
+// DATE-003/DATE-005: предложенные варианты дат — кнопки внутри сообщения ассистента, к которому относятся.
+// Это предложения, а не бронь: цены и наличие — после выбора. Варианты прошлых ходов устаревают (не кликаются).
 let optionButtons = [];
+const cityButtons = [];
 
-function renderQuestions(questions) {
-  const box = $("questions");
-  box.replaceChildren();
+function retireOptions() {
+  for (const button of optionButtons) {
+    button.disabled = true;
+    button.classList.add("stale");
+    button.title = "Варианты устарели: выберите из последнего сообщения";
+  }
   optionButtons = [];
+}
+
+function attachQuestionOptions(node, questions) {
   for (const question of questions || []) {
-    const item = el("div", { class: "msg assistant", "data-testid": "question" }, `Вопрос: ${question.question}`);
     const options = question.options || [];
-    if (options.length) {
-      const group = el("div", { class: "question-options", role: "group", "aria-label": "Варианты дат поездки" });
-      for (const option of options) {
-        const button = el("button", { type: "button", class: "option", "data-testid": "question-option", "data-option-id": option.option_id }, option.label);
-        button.title = "Выбрать эти даты (предложение, не бронирование)";
-        button.addEventListener("click", () => chooseDates(question, option));
-        optionButtons.push(button);
-        group.append(button);
-      }
-      item.append(group);
+    if (!options.length) continue;
+    const group = el("div", { class: "question-options", role: "group", "aria-label": "Варианты дат поездки" });
+    for (const option of options) {
+      const button = el("button", { type: "button", class: "option", "data-testid": "question-option", "data-option-id": option.option_id }, option.label);
+      button.title = "Выбрать эти даты (предложение, не бронирование)";
+      button.addEventListener("click", () => chooseDates(question, option));
+      optionButtons.push(button);
+      group.append(button);
     }
-    box.append(item);
+    node.append(group);
+  }
+}
+
+// CITY-002: предложенные города — кнопки в сообщении с предложением; остаются доступными для смены выбора.
+function attachDestinationOptions(node, candidates) {
+  const group = el("div", { class: "question-options cities", role: "group", "aria-label": "Предложенные направления" });
+  for (const candidate of candidates) {
+    const button = el("button", { type: "button", class: "option", "data-testid": "city-option", "data-candidate-name": candidate.place.name }, candidate.place.name);
+    button.title = "Выбрать это направление («куда»); выбор можно изменить";
+    button.addEventListener("click", () => chooseDestination(candidate));
+    cityButtons.push(button);
+    group.append(button);
+  }
+  node.append(group);
+}
+
+function markChosenCities(trip) {
+  const chosen = trip.request && trip.request.destination ? trip.request.destination.name : null;
+  for (const button of cityButtons) {
+    const selected = button.getAttribute("data-candidate-name") === chosen;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
   }
 }
 
@@ -408,7 +542,11 @@ function setOptionsDisabled(disabled) {
 
 // Выбор варианта дат: ход без LLM; сервер сверяет вариант с текущей ревизией и сохраняет прочие условия.
 async function chooseDates(question, option) {
-  if (!state.trip || state.busy) return;
+  if (!state.trip) return;
+  if (state.busy) {
+    busyNotice();
+    return;
+  }
   const range = state.trip.request && state.trip.request.date_range;
   if (range && range.start === option.date_from && range.end === option.date_to) {
     say("assistant", `Даты ${option.label} уже выбраны.`);
@@ -416,13 +554,15 @@ async function chooseDates(question, option) {
   }
   state.busy = true;
   setOptionsDisabled(true);
+  const offered = optionButtons;
   try {
     say("user", `Выбираю даты: ${option.label}`);
-    const turn = await sendMessage({ choice: { ambiguity_id: question.ambiguity_id, option_id: option.option_id, date_from: option.date_from, date_to: option.date_to } });
+    const turn = await sendMessage({ choice: { ambiguity_id: question.ambiguity_id, option_id: option.option_id, date_from: option.date_from, date_to: option.date_to } },
+      () => chooseDates(question, option));
     if (turn) resetCart();
   } finally {
     state.busy = false;
-    setOptionsDisabled(false);
+    if (optionButtons === offered) setOptionsDisabled(false);
   }
 }
 
@@ -508,11 +648,12 @@ async function ensureSession() {
   if (dataMode === "mock") {
     $("data-notice").textContent = "Демонстрационный режим: все предложения, цены и наличие синтетические (пометка «ДЕМО») — это не цены, не наличие и не расписание.";
   }
+  applyManualVisibility();
   if (state.session.llm_mode === "live") {
-    $("llm-notice").textContent = state.session.privacy_notice ||
+    $("llm-notice").textContent = publicPrivacyNotice(state.session.privacy_notice) ||
       "LLM подключён: опишите поездку своими словами. Цены, даты и условия проверяет код, а не модель.";
     $("text-label").textContent = "Опишите поездку или изменение условий (текст уйдёт LLM-провайдеру)";
-    // UI-003: при работающем LLM форма — запасной путь; свёрнута, но доступна (DEC-08 без LLM — раскрыта).
+    // UI-003: при работающем LLM форма — запасной путь; свёрнута (DEC-08 без LLM — раскрыта).
     $("structured-details").open = false;
   } else if (state.session.llm_mode === "replay") {
     $("llm-notice").textContent = "LLM в режиме Replay: понимаются только заранее записанные фразы.";
@@ -546,6 +687,28 @@ function formPayload(form) {
   if (data.get("pet") === "on") payload.pets = [{ kind: "dog", count: 1 }];
   if (data.get("room_family") === "on") payload.room_type = "family";
   return payload;
+}
+
+// UI-010 (решение владельца): кнопка «Без LLM», форма и предложения ручного режима скрыты из публичного
+// интерфейса при подключённом LLM. Реализация, API и тесты ручного режима сохранены; для диагностики режим
+// открывается адресом с параметром «?manual=1». Без LLM (DEC-08) форма — единственный способ ввода и видна.
+const MANUAL_DIAGNOSTIC = typeof location !== "undefined" && /(?:^|[?&])manual=1(?:&|$)/.test(location.search || "");
+
+function manualAllowed() {
+  return MANUAL_DIAGNOSTIC || Boolean(state.session && state.session.llm_mode === "off");
+}
+
+function applyManualVisibility() {
+  const visible = manualAllowed();
+  $("manual-btn").hidden = !visible;
+  $("structured-details").hidden = !visible;
+  if (!visible) $("manual-offer").hidden = true;
+}
+
+// Уведомление о передаче данных сохраняется; фраза о скрытой форме заменяется на верную для интерфейса.
+function publicPrivacyNotice(notice) {
+  if (!notice || manualAllowed()) return notice;
+  return notice.replace("Форма отправляется без LLM.", "Выбор вариантов нажатием (города, даты, предложения) обрабатывается без LLM.");
 }
 
 // UI-003: ручной режим «Без LLM» — существующая форма. Ход из формы сервер обрабатывает без LLM
@@ -603,6 +766,7 @@ function openManualMode() {
 }
 
 function offerManualMode(reason) {
+  if (!manualAllowed()) return;
   const button = el("button", { type: "button", "data-testid": "manual-offer-button" }, "Заполнить форму без LLM");
   button.addEventListener("click", openManualMode);
   $("manual-offer").replaceChildren(el("span", {}, `${reason} `), button);
@@ -616,7 +780,9 @@ for (const type of ["input", "change"]) {
   });
 }
 
-async function sendMessage(body) {
+// Ход диалога: ответ ассистента — одно сообщение ленты; вопросы уже входят в его текст, варианты выбора
+// (даты, предложенные города) прикрепляются к нему же. Отдельной панели «Вопрос» нет (UI-008).
+async function sendMessage(body, retry) {
   await ensureSession();
   $("progress").hidden = false;
   try {
@@ -625,8 +791,14 @@ async function sendMessage(body) {
       trip_revision: state.revision,
       ...body,
     });
-    say("assistant", turn.assistant_text);
-    renderQuestions(turn.questions);
+    retireOptions();
+    const node = say("assistant", turn.assistant_text);
+    attachQuestionOptions(node, turn.questions);
+    const candidates = turn.state.candidate_destinations || [];
+    const request = turn.state.request;
+    if (candidates.length && request && !request.destination && !(turn.questions || []).length) {
+      attachDestinationOptions(node, candidates);
+    }
     renderTrip(turn.state);
     if (body.text && turn.input_mode === "llm_unavailable") {
       offerManualMode("LLM сейчас недоступен: текст не обработан и сохранён в поле ввода. Можно продолжить без LLM.");
@@ -635,7 +807,12 @@ async function sendMessage(body) {
     }
     return turn;
   } catch (error) {
-    say("assistant", `Ошибка: ${error.message}`);
+    if (error.status === 409) {
+      await refreshTrip();
+      sayRetry(`Действие не выполнено: ${error.message}. Состояние поездки обновлено — повторите действие.`, retry);
+    } else {
+      sayRetry(`Ошибка: ${error.message}`, error.status ? null : retry);
+    }
     if (body.text) offerManualMode("Текст не обработан и сохранён в поле ввода. Можно продолжить без LLM.");
     return null;
   } finally {
@@ -649,15 +826,32 @@ $("trip-form").addEventListener("submit", (event) => {
   sendMessage({ form: formPayload(event.target) }).then((turn) => { if (turn) touchedFields.clear(); });
 });
 
+async function sendText(value) {
+  if (state.busy) {
+    busyNotice();
+    return null;
+  }
+  state.busy = true;
+  try {
+    // UI-003: при недоступном LLM введённый текст не стирается; стирается только отправленный текст.
+    const turn = await sendMessage({ text: value }, () => sendText(value));
+    if (turn && turn.input_mode !== "llm_unavailable" && $("text-input").value.trim() === value) $("text-input").value = "";
+    return turn;
+  } finally {
+    state.busy = false;
+  }
+}
+
 $("text-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const value = $("text-input").value.trim();
   if (!value) return;
+  if (state.busy) {
+    busyNotice();
+    return;
+  }
   say("user", value);
-  // UI-003: при недоступном LLM введённый текст не стирается.
-  sendMessage({ text: value }).then((turn) => {
-    if (turn && turn.input_mode !== "llm_unavailable") $("text-input").value = "";
-  });
+  sendText(value);
 });
 
 $("cart-btn").addEventListener("click", async () => {

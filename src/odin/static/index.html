@@ -20,19 +20,18 @@
 
   <main class="layout">
     <section class="chat" aria-label="Чат">
-      <div id="messages" class="messages" data-testid="messages" aria-live="polite"></div>
-      <div id="questions" class="questions" data-testid="questions"></div>
+      <div id="messages" class="messages" data-testid="messages" role="log" aria-live="polite" aria-label="Сообщения диалога"></div>
       <form id="text-form" class="text-form" data-testid="text-form">
         <label for="text-input" id="text-label">Свободный текст (без LLM будет честный отказ)</label>
         <textarea id="text-input" rows="2" maxlength="4000"
           placeholder="Например: из Москвы в Казань 20–22 ноября вдвоём, не самолётом, до 60 000 ₽"></textarea>
         <button type="submit">Отправить текст</button>
-        <button type="button" id="manual-btn" class="secondary" data-testid="manual-mode"
+        <button type="button" id="manual-btn" class="secondary" data-testid="manual-mode" hidden
           title="Открыть форму ручного ввода: запрос обрабатывается без LLM">Без LLM</button>
       </form>
       <div id="manual-offer" class="manual-offer" data-testid="manual-offer" hidden></div>
 
-      <details id="structured-details" class="structured" open>
+      <details id="structured-details" class="structured" open hidden>
       <summary>Форма запроса (без LLM)</summary>
       <form id="trip-form" class="trip-form" data-testid="structured-form">
         <fieldset>
@@ -68,6 +67,13 @@
       <h2>Моя поездка <span id="revision" class="muted"></span></h2>
       <div id="progress" class="progress" data-testid="progress" hidden>Идёт поиск…</div>
       <div id="trip-summary" data-testid="trip-summary"><p class="muted">Запрос ещё не задан.</p></div>
+      <form id="destination-form" class="destination-form" data-testid="destination-form" hidden>
+        <label for="destination-input">Новое направление («куда»)</label>
+        <input id="destination-input" maxlength="120" autocomplete="off" placeholder="Например: Казань">
+        <button type="submit" id="destination-apply">Применить</button>
+        <button type="button" id="destination-cancel" class="secondary">Отмена</button>
+        <p id="destination-hint" class="meta"></p>
+      </form>
       <h3>Варианты</h3>
       <div id="cards" class="cards" data-testid="cards"></div>
       <div id="selection-bar" class="selection-bar" data-testid="selection-bar" hidden></div>
