@@ -388,11 +388,12 @@ def _rail_terms(raw: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------- нормализация гостиниц
 
 
-# PATCH-63G-02: идентичность гостиничного предложения. Позиция тарифа в списке идентичностью не является:
-# в идентификатор входят гостиница, даты, состав гостей, номер и тариф. Устойчивый идентификатор тарифа
-# поставщика (если он есть в ответе) используется вместо характеристик тарифа; иначе — подтверждённые
-# характеристики (номер, питание, отмена, основа и сумма цены). Те же условия → тот же идентификатор;
-# другие даты или гости → другой, поэтому котировка прежней ревизии не совпадёт с новой.
+# PATCH-63G-02 / 63Д-01: идентичность гостиничной котировки. Позиция тарифа в списке идентичностью не
+# является. Идентичность тарифа — номер и тариф (устойчивый id тарифа поставщика, если он есть в ответе).
+# Идентичность котировки — гостиница, даты, состав гостей, тариф и всегда условия, влияющие на стоимость:
+# основа и сумма цены, валюта, питание, отмена — в том числе при наличии id тарифа поставщика. Та же
+# котировка → тот же идентификатор; другие цена, валюта, даты или гости → другой, поэтому котировка
+# прежней ревизии не совпадёт с новой.
 _SUPPLIER_RATE_KEYS = ("rate_id", "rate_key", "tariff_id", "offer_id", "offer_key")
 _SUPPLIER_ROOM_KEYS = ("room_id", "room_type_id", "room_key")
 
@@ -418,7 +419,11 @@ def hotel_offer_identity(
     room: dict[str, Any],
     rate: dict[str, Any],
 ) -> str:
-    """Детерминированный отпечаток предложения (16 hex): одинаков при перестановке тарифов в ответе."""
+    """Детерминированный отпечаток котировки (16 hex): одинаков при перестановке тарифов в ответе."""
+    price = rate.get("price") if isinstance(rate.get("price"), dict) else {}
+    amount = to_money(price)
+    currency = price.get("currency")
+    meal = rate.get("meal") if isinstance(rate.get("meal"), dict) else {}
     identity: dict[str, Any] = {
         "hotel": source_hotel_id,
         "check_in": check_in.isoformat(),
@@ -427,17 +432,11 @@ def hotel_offer_identity(
         "children_ages": sorted(children_ages),
         "rooms": 1,
         "room": _supplier_key(room, _SUPPLIER_ROOM_KEYS) or safe_text(room.get("room_name"), 160),
-    }
-    supplier_rate = _supplier_key(rate, _SUPPLIER_RATE_KEYS)
-    if supplier_rate is not None:
-        identity["rate"] = supplier_rate
-    else:
-        price = rate.get("price") if isinstance(rate.get("price"), dict) else {}
-        meal = rate.get("meal") if isinstance(rate.get("meal"), dict) else {}
-        identity["tariff"] = {
+        "rate": _supplier_key(rate, _SUPPLIER_RATE_KEYS),
+        "quote": {
             "price_basis": rate.get("price_basis"),
-            "amount": str(to_money(price)) if to_money(price) is not None else None,
-            "currency": price.get("currency"),
+            "amount": str(amount) if amount is not None else None,
+            "currency": currency if isinstance(currency, str) else None,
             "breakfast": rate.get("breakfast_included")
             if isinstance(rate.get("breakfast_included"), bool)
             else None,
@@ -446,7 +445,8 @@ def hotel_offer_identity(
             if isinstance(rate.get("free_cancellation"), bool)
             else None,
             "free_cancellation_until": safe_text(rate.get("free_cancellation_until"), 40),
-        }
+        },
+    }
     blob = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 

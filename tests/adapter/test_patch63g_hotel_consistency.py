@@ -162,26 +162,102 @@ def test_rate_permutation_keeps_identity_and_different_rates_differ() -> None:
     assert len({o.offer_id for o in offers}) == len(offers) == 2, "разные тарифы одной гостиницы различаются"
 
 
+def _with_rate_ids(
+    payload: dict[str, Any], *, amount_delta: float = 0.0, currency: str | None = None
+) -> dict:
+    """Устойчивые id тарифов поставщика (не по позиции) и, при необходимости, новая цена/валюта котировки."""
+    for room in payload.get("rooms") or []:
+        for rate in room.get("rates") or []:
+            rate["rate_id"] = f"R-{room['room_name']}-{rate.get('breakfast_included')}"
+            rate["price"]["amount"] += amount_delta
+            if currency is not None:
+                rate["price"]["currency"] = currency
+    for hotel in payload.get("hotels") or []:
+        best = hotel.get("best_offer")
+        if isinstance(best, dict):
+            best["rate_id"] = f"BO-{hotel['hotel_id']}"
+            best["price"]["amount"] += amount_delta
+            if currency is not None:
+                best["price"]["currency"] = currency
+    return payload
+
+
+def _rated_details(**quote: Any) -> list[Any]:
+    return _details(_with_rate_ids(details_payload("900000", CHECK_IN, CHECK_OUT, 2), **quote))[1]
+
+
+def _by_tariff(offers: list[Any]) -> dict[tuple[bool | None, str | None], str]:
+    return {(o.terms.breakfast_included, o.room_type): o.offer_id for o in offers}
+
+
+def _priced_ids(payload: dict[str, Any]) -> set[str]:
+    """id котировок поиска с ценой (у «900009» в фикстуре тарифа и цены нет — котировка не меняется)."""
+    return {o.offer_id for o in _search(payload=payload)[1] if o.price_total.amount is not None}
+
+
 def test_supplier_rate_id_is_used_and_duplicates_collapse() -> None:
-    payload = details_payload("900000", CHECK_IN, CHECK_OUT, 2)
-    room = payload["rooms"][0]
-    cheap = room["rates"][0]
-    room["rates"] = [
-        {**cheap, "rate_id": "R-1"},
-        {**cheap, "rate_id": "R-2", "price": {"amount": 8500.0, "currency": "RUB"}},
-    ]
-    _, offers, _, _ = _details(payload)
-    first = next(o for o in offers if str(o.price_total.amount) == "8400.00")
-    repriced = copy.deepcopy(payload)
-    repriced["rooms"][0]["rates"][0]["price"]["amount"] = 8300.0
-    _, again, _, _ = _details(repriced)
-    assert first.offer_id in {o.offer_id for o in again}, (
-        "устойчивый id тарифа поставщика сохраняет идентичность"
+    offers = _rated_details()
+    assert len(offers) == 2 and _by_tariff(_rated_details()) == _by_tariff(offers), (
+        "одинаковая котировка — одинаковый id"
     )
-    without_ids = details_payload("900000", CHECK_IN, CHECK_OUT, 2)
-    without_ids["rooms"][0]["rates"] = [copy.deepcopy(cheap), copy.deepcopy(cheap)]
-    _, single, _, _ = _details(without_ids)
-    assert len(single) == 1, "одинаковые тарифы без id поставщика — одно предложение, а не два с разными id"
+    repriced, other_currency = _rated_details(amount_delta=-100.0), _rated_details(currency="USD")
+    assert not {o.offer_id for o in repriced} & {o.offer_id for o in offers}, "другая цена — другой id"
+    assert not {o.offer_id for o in other_currency} & {o.offer_id for o in offers}, (
+        "другая валюта — другой id"
+    )
+
+    shuffled = _with_rate_ids(details_payload("900000", CHECK_IN, CHECK_OUT, 2))
+    shuffled["rooms"].reverse()
+    for room in shuffled["rooms"]:
+        room["rates"].reverse()
+    assert _tariffs(_details(shuffled)[1]) == _tariffs(offers), "перестановка не меняет id → котировка"
+
+    for rates_with_ids in (True, False):
+        duplicated = details_payload("900000", CHECK_IN, CHECK_OUT, 2)
+        cheap = duplicated["rooms"][0]["rates"][0]
+        if rates_with_ids:
+            cheap["rate_id"] = "R-1"
+        duplicated["rooms"][0]["rates"] = [copy.deepcopy(cheap), copy.deepcopy(cheap)]
+        _, single, _, _ = _details(duplicated)
+        assert len(single) == 1, "одинаковые котировки — одно предложение, а не два с разными id"
+
+
+def test_hotel_quote_id_changes_with_price() -> None:
+    """HOTEL-63D-01: тот же id тарифа поставщика, другая сумма — другая котировка (поиск и детали)."""
+    base = _by_tariff(_rated_details())
+    repriced = _rated_details(amount_delta=-100.0)
+    assert {str(o.price_total.amount) for o in repriced} == {"8300.00", "10300.00"}
+    assert set(_by_tariff(repriced)) == set(base) and not set(_by_tariff(repriced).values()) & set(
+        base.values()
+    )
+    search = _priced_ids(_with_rate_ids(hotels_payload(CHECK_IN, CHECK_OUT)))
+    search_repriced = _priced_ids(_with_rate_ids(hotels_payload(CHECK_IN, CHECK_OUT), amount_delta=-100.0))
+    assert len(search) == len(search_repriced) == 2 and not search_repriced & search
+    assert _by_tariff(_rated_details(amount_delta=0.0)) == base, "без изменения цены — тот же id"
+
+
+def test_hotel_quote_id_changes_with_currency() -> None:
+    """HOTEL-63D-01: тот же id тарифа и та же сумма, другая валюта — другая котировка."""
+    base = _rated_details()
+    in_usd = _rated_details(currency="USD")
+    assert {o.currency for o in in_usd} == {"USD"}
+    assert [str(o.price_total.amount) for o in in_usd] == [str(o.price_total.amount) for o in base]
+    assert not {o.offer_id for o in in_usd} & {o.offer_id for o in base}
+    search = _priced_ids(_with_rate_ids(hotels_payload(CHECK_IN, CHECK_OUT)))
+    search_usd = _priced_ids(_with_rate_ids(hotels_payload(CHECK_IN, CHECK_OUT), currency="USD"))
+    assert len(search) == len(search_usd) == 2 and not search_usd & search
+
+
+def test_quote_id_with_supplier_rate_id_changes_with_dates_and_guests() -> None:
+    base = {o.offer_id for o in _rated_details()}
+    for check_out, adults, children in (
+        (CHECK_OUT + timedelta(days=1), 2, None),
+        (CHECK_OUT, 3, None),
+        (CHECK_OUT, 2, [5]),
+    ):
+        payload = _with_rate_ids(details_payload("900000", CHECK_IN, check_out, adults, children))
+        changed = {o.offer_id for o in _details(payload, check_out, adults, children)[1]}
+        assert changed and not changed & base, (check_out, adults, children)
 
 
 # ---------------------------------------------------------------- 63G-03: состав гостей в ответе
@@ -376,3 +452,111 @@ def test_same_conditions_give_same_hotel_identity(live: tuple[Any, FakeTutu]) ->
         o["offer_id"] for o in second["state"]["hotel_offers"]
     }
     assert TRIP_START.isoformat() in _hotel(first["state"])["offer_id"]
+
+
+class _RepricingTutu(FakeTutu):
+    """Tutu с устойчивыми id тарифов; цену гостиниц можно изменить между ревизиями (даты и гости те же)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.amount_delta = 0.0
+
+    def payload(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:  # type: ignore[override]
+        payload = FakeTutu.payload(name, arguments)
+        if name in ("search_hotels", "get_offer_details"):
+            payload = _with_rate_ids(payload, amount_delta=self.amount_delta)
+        return payload
+
+
+def test_old_hotel_quote_rejected_after_price_update(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from odin.api import create_app
+
+    tutu = _RepricingTutu()
+    settings = Settings.from_env(
+        {
+            "ODIN_DATA_MODE": "live",
+            "ODIN_DB_PATH": str(tmp_path / "odin.sqlite3"),
+            "ODIN_REPLAY_DIR": str(tmp_path / "replay"),
+            "ODIN_TOOL_RETRIES": "0",
+        }
+    )
+    application = build_application(
+        settings, mcp_transport=tutu.transport(), http_transport=FakeRest().transport()
+    )
+    with TestClient(create_app(settings, application=application)) as client:
+        first = _plan(client, transport_modes=["rail"])
+        trip_id = first["trip_id"]
+        old_state = first["state"]
+        old_hotel = _hotel(old_state)
+        old_ids = {o["offer_id"] for o in old_state["hotel_offers"]}
+        # Явный выбор гостиницы (REPLAN-02): при пересборке без смены дат и гостей он переносится по offer_id.
+        chosen = {
+            c["role"]: c["offer_id"]
+            for c in old_state["plan"]["components"]
+            if c["role"] in ("outbound", "return", "hotel")
+        }
+        selected = client.post(
+            f"/api/v1/trips/{trip_id}/selections",
+            json={
+                "request_id": "req-63d-select",
+                "trip_revision": first["trip_revision"],
+                "selections": chosen,
+            },
+        )
+        assert selected.status_code == 200, selected.text
+        cart = client.post(
+            f"/api/v1/trips/{trip_id}/cart",
+            json={"request_id": "req-63d-cart", "trip_revision": selected.json()["revision"]},
+        )
+        assert cart.status_code == 201, cart.text
+        revision = cart.json()["trip_revision"]
+
+        tutu.amount_delta = -100.0  # тот же отель, тариф (rate_id), даты и гости — новая цена
+        replanned = client.post(
+            f"/api/v1/trips/{trip_id}/replan",
+            json={
+                "request_id": "req-63d-replan",
+                "trip_revision": revision,
+                "change_set": {"transport_modes": ["flight"]},
+            },
+        )
+        assert replanned.status_code == 200, replanned.text
+        body = replanned.json()
+        state = body["state"]
+        assert body["trip_revision"] > revision and state["cart"] is None
+        new_ids = {o["offer_id"] for o in state["hotel_offers"]}
+        assert new_ids and not new_ids & old_ids, "котировки с новой ценой получили новые offer_id"
+        new_hotel = _hotel(state)
+        assert new_hotel["offer_id"] != old_hotel["offer_id"], "старый offer_id не выбирает новую котировку"
+        old_amount = float(old_hotel["price_total"]["amount"])
+        assert float(new_hotel["price_total"]["amount"]) == old_amount - 100.0, "в новой ревизии — новая цена"
+        component = next(c for c in state["plan"]["components"] if c["role"] == "hotel")
+        assert component["offer_id"] == new_hotel["offer_id"]
+        assert old_hotel["price_total"]["amount"] not in {
+            o["price_total"]["amount"]
+            for o in state["hotel_offers"]
+            if o["hotel_id"] == old_hotel["hotel_id"]
+        }
+
+        stale = client.post(
+            f"/api/v1/trips/{trip_id}/selections",
+            json={
+                "request_id": "req-63d-stale",
+                "trip_revision": body["trip_revision"],
+                "selections": {"hotel": old_hotel["offer_id"]},
+            },
+        )
+        assert stale.status_code >= 400 and "неизвестные варианты" in stale.text
+        confirm = client.post(
+            f"/api/v1/carts/{cart.json()['cart']['cart_id']}/confirm",
+            json={
+                "request_id": "req-63d-confirm",
+                "trip_revision": revision,
+                "confirmation_id": "conf-63d-0001",
+                "purchase_consent": True,
+                "risk_acknowledgement": True,
+            },
+        )
+        assert confirm.status_code == 409, "корзина со старой ценой не подтверждается как актуальная"
