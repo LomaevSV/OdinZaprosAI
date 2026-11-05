@@ -48,3 +48,9 @@ reports/raw/
 # IDE
 .idea/
 .vscode/
+
+# VPS local backups
+*.bak-before-*
+
+# Локальные compose-оверлеи сервера команды (пути и образы VPS) не входят в поставку
+compose.stage*.yaml

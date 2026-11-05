@@ -1,5 +1,6 @@
 :root { --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d9de; --mock: #a15c00; --ok: #1f7a3a; --bad: #b3261e; --unk: #6b6b70; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--fg); background: #fafafa; }
 .topbar { display: flex; gap: 12px; align-items: center; padding: 10px 20px; background: #fff; border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 20px; margin: 0 12px 0 0; }
@@ -9,13 +10,32 @@ body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, 
 .notice { margin: 8px 20px; padding: 8px 12px; background: #fff7e6; border: 1px solid #f0d9a8; border-radius: 6px; }
 .layout { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(420px, 1.2fr); gap: 16px; padding: 0 20px 20px; }
 .chat, .trip { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
-.messages { max-height: 260px; overflow: auto; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
-.msg { white-space: pre-wrap; margin: 6px 0; padding: 6px 8px; border-radius: 6px; }
-.msg.user { background: #eef3ff; }
-.msg.assistant { background: #f4f4f6; }
-.questions button { margin: 4px 6px 4px 0; }
+/* UI-008: лента как в обычном чате — без собственной прокрутки (прокручивается страница), автор различим. */
+.messages { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.msg { white-space: pre-wrap; margin: 0; padding: 8px 10px; border-radius: 10px; max-width: 92%; overflow-wrap: anywhere; }
+.msg::before { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 2px; white-space: normal; }
+.msg.user { align-self: flex-end; background: #eef3ff; border-bottom-right-radius: 2px; }
+.msg.user::before { content: "Вы"; }
+.msg.assistant { align-self: flex-start; background: #f4f4f6; border-bottom-left-radius: 2px; }
+.msg.assistant::before { content: "О!дин"; }
+.question-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
+.question-options .option { border-color: #3366cc; color: #1f3d7a; background: #f5f8ff; text-align: left; }
+.question-options .option:focus-visible { outline: 2px solid #3366cc; outline-offset: 2px; }
+.question-options .option.selected { background: #3366cc; color: #fff; }
+.question-options .option.stale { border-color: var(--line); color: var(--muted); background: #fafafa; }
+.link-button { padding: 0 4px; border: none; background: none; color: #1f4fb3; text-decoration: underline; font: inherit; }
+.destination-form { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 6px 0 10px; padding: 8px; border: 1px solid #3366cc; border-radius: 6px; background: #f5f8ff; }
+.destination-form label, .destination-form .meta { grid-column: 1 / -1; font-size: 13px; }
 .text-form, .trip-form { margin-top: 8px; }
-.text-form textarea { width: 100%; }
+/* UI-014: поле ввода — около 6 строк без ручного растягивания; длинный текст прокручивается внутри поля
+   (лента чата своей прокрутки не получает). Кнопка «Отправить» — под полем справа, на телефоне — во всю ширину. */
+.text-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.text-form label { flex: 1 0 100%; }
+.text-form textarea { flex: 1 0 100%; width: 100%; font: inherit; line-height: 1.45; padding: 8px 10px;
+  height: calc(6 * 1.45em + 18px); min-height: calc(5 * 1.45em + 18px); max-height: 60vh;
+  overflow-y: auto; resize: vertical; border: 1px solid #888; border-radius: 6px; }
+.text-form button[type="submit"] { margin-left: auto; }
+.selection-status { font-weight: 600; color: #1f3d7a; }
 fieldset { border: 1px solid var(--line); border-radius: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
 fieldset label { display: flex; flex-direction: column; font-size: 13px; }
 fieldset label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; gap: 6px; }
@@ -28,6 +48,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .card { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .card .meta { font-size: 12px; color: var(--muted); }
 .card.selected { border-color: #3366cc; box-shadow: 0 0 0 1px #3366cc inset; }
+.card.selectable { cursor: pointer; }
+.card.selectable:hover { border-color: #7a99d6; }
+.card.selectable:focus-visible { outline: 2px solid #3366cc; outline-offset: 2px; }
+.card.selected::before { content: "✓ выбрано"; float: right; font-size: 12px; color: #3366cc; font-weight: 600; }
+button.inactive { opacity: 0.6; }
+.meta { font-size: 12px; color: var(--muted); }
 .status-matched { color: var(--ok); }
 .status-violated { color: var(--bad); }
 .status-unknown, .status-not_applicable { color: var(--unk); }
@@ -36,3 +62,32 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 8px; }
 dialog label { display: block; margin: 8px 0; }
 menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; }
+.offer-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.offer-column, .offer-section { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fcfcfd; }
+.offer-section { margin-top: 12px; }
+.column-title, .cart-section-title { margin: 0; padding: 6px 10px; font-size: 15px; font-weight: 700; color: #1f3d7a; background: #eef3ff; border-left: 4px solid #3366cc; border-radius: 4px; }
+.column-title .count { font-weight: 400; font-size: 13px; color: var(--muted); }
+.offer-section.transfers .column-title, .cart-section.transfer .cart-section-title { color: #3d4a5c; background: #f1f3f6; border-left-color: #7a8699; }
+.offer-column .empty { padding: 8px; border: 1px dashed var(--line); border-radius: 6px; }
+.cart-section { display: grid; gap: 6px; margin-top: 10px; }
+.cart-section-title { font-size: 14px; }
+.selection-bar { margin-top: 10px; padding: 8px 10px; border: 1px solid #3366cc; border-radius: 6px; background: #f5f8ff; display: grid; gap: 2px; }
+.selection-bar .total { font-weight: 600; }
+@media (min-width: 1280px) { .layout { grid-template-columns: minmax(360px, 1fr) minmax(640px, 2fr); } }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .offer-columns { grid-template-columns: 1fr; gap: 16px; }
+  .column-title { position: sticky; top: 0; z-index: 1; }
+}
+@media (max-width: 600px) {
+  .layout { padding: 0 8px 12px; }
+  .chat, .trip { padding: 10px; }
+  /* 16px — без автоматического увеличения страницы в мобильных браузерах при фокусе поля. */
+  .text-form textarea { font-size: 16px; }
+  .text-form button[type="submit"] { flex: 1 1 auto; min-height: 44px; }
+}
+.structured { margin-top: 8px; }
+.structured summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.text-form .secondary { margin-left: 0; }
+.manual-offer { margin-top: 8px; padding: 6px 8px; border: 1px solid #f0d9a8; border-radius: 6px; background: #fff7e6; font-size: 13px; }
+.manual-offer button { margin-left: 4px; }

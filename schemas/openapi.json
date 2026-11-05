@@ -887,6 +887,14 @@
               }
             ],
             "title": "Source Span"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AmbiguityOption"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Options"
           }
         },
         "additionalProperties": false,
@@ -899,6 +907,42 @@
           "source_span"
         ],
         "title": "Ambiguity"
+      },
+      "AmbiguityOption": {
+        "properties": {
+          "option_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Option Id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "date_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Date From"
+          },
+          "date_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Date To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "option_id",
+          "label",
+          "date_from",
+          "date_to"
+        ],
+        "title": "AmbiguityOption",
+        "description": "Вариант ответа на уточнение, выбираемый нажатием (DATE-003): предложение дат, а не бронь."
       },
       "Assumption": {
         "properties": {
@@ -1477,6 +1521,42 @@
         ],
         "title": "CartResponse"
       },
+      "ChoiceAnswer": {
+        "properties": {
+          "ambiguity_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Ambiguity Id"
+          },
+          "option_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Option Id"
+          },
+          "date_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Date From"
+          },
+          "date_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Date To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ambiguity_id",
+          "option_id",
+          "date_from",
+          "date_to"
+        ],
+        "title": "ChoiceAnswer",
+        "description": "Выбор предложенного варианта нажатием (DATE-003). Сервер сверяет вариант с состоянием поездки."
+      },
       "ConfirmRequest": {
         "properties": {
           "request_id": {
@@ -1685,7 +1765,8 @@
               "pets",
               "hotel_breakfast",
               "hotel_stars_min",
-              "hotel_free_cancellation"
+              "hotel_free_cancellation",
+              "hotel_room_type"
             ],
             "title": "Field"
           },
@@ -2857,6 +2938,16 @@
                 "type": "null"
               }
             ]
+          },
+          "choice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChoiceAnswer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -3908,6 +3999,18 @@
             "title": "Free Cancellation Required",
             "default": false
           },
+          "room_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "family"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Room Type"
+          },
           "wishes_tags": {
             "items": {
               "type": "string"
@@ -4594,7 +4697,8 @@
               "structured_form",
               "free_text_llm",
               "free_text_replay",
-              "llm_unavailable"
+              "llm_unavailable",
+              "choice"
             ],
             "title": "Input Mode"
           },

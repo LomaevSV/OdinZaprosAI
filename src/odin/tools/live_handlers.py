@@ -49,7 +49,9 @@ from odin.tools.tutu import (
 )
 from odin.tools.tutu import (
     TutuGateway,
+    UnsupportedGuests,
     avia_arguments,
+    check_hotel_guests,
     details_arguments,
     hotel_arguments,
     normalize_hotel_details,
@@ -63,6 +65,17 @@ Handler = Callable[[dict[str, Any]], dict[str, Any]]
 
 def _fallback_note(code: str | None) -> str:
     return f"Live-источник недоступен ({code or 'ошибка'}), совместимого Replay нет: показан ДЕМО-вариант (DEC-23)"
+
+
+def _guests_error(exc: UnsupportedGuests) -> dict[str, Any]:
+    """PATCH-63G-01: состав гостей, неподдерживаемый Tutu, — явная ошибка; ни Live, ни ДЕМО не подставляются."""
+    return {
+        "status": "error",
+        "data": None,
+        "sources": [],
+        "error_code": exc.error_code,
+        "warnings": [str(exc)],
+    }
 
 
 def _place_from(data: Any, fallback_name: str) -> ResolvedPlace:
@@ -245,8 +258,13 @@ class LiveToolset:
         children = [int(age) for age in arguments.get("children_ages") or []]
         ttl = int(arguments.get("ttl_minutes") or 30)
         city = _place_from(arguments.get("city_place"), city_name)
+        try:
+            mcp_args = hotel_arguments(
+                city.name, check_in.isoformat(), check_out.isoformat(), adults, children
+            )
+        except UnsupportedGuests as exc:
+            return _guests_error(exc)  # PATCH-63G-01: до обращения к поставщику, без подмены состава
         self.policy.check_provider_tool(TUTU, "search_hotels")
-        mcp_args = hotel_arguments(city.name, check_in.isoformat(), check_out.isoformat(), adults, children)
         assert self.tutu is not None
         gateway = self.tutu
         outcome = self._raw(TUTU, "search_hotels", lambda a: gateway.call("search_hotels", a))(mcp_args)
@@ -446,6 +464,10 @@ class LiveToolset:
             return mock_adapters._error("нужен список гостиниц")
         children = [int(age) for age in arguments.get("children_ages") or []]
         ttl = int(arguments.get("ttl_minutes") or 30)
+        try:
+            check_hotel_guests(adults, children)
+        except UnsupportedGuests as exc:
+            return _guests_error(exc)
         self.policy.check_provider_tool(TUTU, "get_offer_details")
         assert self.tutu is not None
         gateway = self.tutu

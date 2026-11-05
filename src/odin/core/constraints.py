@@ -26,13 +26,18 @@ SCOPE_ROLES: dict[str, frozenset[str]] = {
 
 @dataclass(frozen=True, slots=True)
 class OfferFacts:
-    """Факты кандидата для проверки условий. Отсутствующее значение — ``None``, а не догадка."""
+    """Факты кандидата для проверки условий. Отсутствующее значение — ``None``, а не догадка.
+
+    ``budget_currency`` — валюта бюджета поездки из запроса (``TripRequest.budget.currency``), а не валюта
+    предложения: угадывать её по цитате условия или по цене нельзя (PRICE-006-03, DEC-17).
+    """
 
     component_id: str
     role: str
     total_amount: Decimal | None = None
     currency: str | None = None
     price_completeness: str = "unknown"
+    budget_currency: str | None = None
     transport_mode: str | None = None
     pets_allowed: bool | None = None
     breakfast_included: bool | None = None
@@ -79,11 +84,23 @@ def _check_budget(constraint: Constraint, facts: OfferFacts) -> ConstraintEvalua
         return _result(
             constraint, facts, "unknown", "значение бюджета не распознано", unknown_reason="data_missing"
         )
-    currency = facts.currency or "RUB"
+    # PRICE-006-03: валюта бюджета известна только из запроса. Выводить её из валюты предложения или из цитаты
+    # условия нельзя — иначе бюджет в EUR сравнивался бы с ценой в RUB как сопоставимый.
+    if facts.budget_currency is None:
+        return _result(
+            constraint,
+            facts,
+            "unknown",
+            "валюта бюджета не передана: сопоставление с ценой не доказано (DEC-17)",
+            unknown_reason="data_missing",
+        )
     status, deviation, reason = evaluate_budget(
-        limit, currency, facts.total_amount, facts.currency, facts.price_completeness
+        limit, facts.budget_currency, facts.total_amount, facts.currency, facts.price_completeness
     )
-    unknown_reason = "price_incomplete" if facts.total_amount is not None else "not_provided_by_source"
+    if status == "unknown" and facts.total_amount is not None and facts.currency != facts.budget_currency:
+        unknown_reason = "currency_unresolved"
+    else:
+        unknown_reason = "price_incomplete" if facts.total_amount is not None else "not_provided_by_source"
     return _result(constraint, facts, status, reason, unknown_reason=unknown_reason, deviation=deviation)
 
 
@@ -123,6 +140,11 @@ def _check_stars(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluat
     return _result(constraint, facts, "violated", f"категория {facts.star_rating}★ ниже требуемой")
 
 
+def _check_room_type(constraint: Constraint, facts: OfferFacts) -> ConstraintEvaluation:
+    """INT-007: тип номера источники не передают — пожелание всегда «не подтверждено», а не «выполнено»."""
+    return _result(constraint, facts, "unknown", "семейный номер: источник не подтвердил тип номера")
+
+
 _EVALUATORS: dict[str, Callable[[Constraint, OfferFacts], ConstraintEvaluation]] = {
     "budget_total": _check_budget,
     "transport_mode": _check_transport_mode,
@@ -130,6 +152,7 @@ _EVALUATORS: dict[str, Callable[[Constraint, OfferFacts], ConstraintEvaluation]]
     "hotel_breakfast": _check_breakfast,
     "hotel_stars_min": _check_stars,
     "hotel_free_cancellation": _check_free_cancellation,
+    "hotel_room_type": _check_room_type,
 }
 
 # Область условия → роли компонентов. Бюджет поездки проверяется у каждого компонента (известная часть),

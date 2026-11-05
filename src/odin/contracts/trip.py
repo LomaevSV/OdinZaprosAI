@@ -28,6 +28,8 @@ ConstraintField = Literal[
     "hotel_breakfast",
     "hotel_stars_min",
     "hotel_free_cancellation",
+    # INT-007: тип номера — только мягкое пожелание; источник его не подтверждает.
+    "hotel_room_type",
 ]
 ConstraintOperator = Literal["eq", "ne", "lte", "gte", "in", "not_in"]
 ConstraintScope = Literal["trip", "hotel", "transport", "transfer"]
@@ -40,6 +42,7 @@ _FIELD_RULES: dict[str, tuple[set[str], set[str]]] = {
     "hotel_breakfast": ({"eq"}, {"hotel"}),
     "hotel_stars_min": ({"gte"}, {"hotel"}),
     "hotel_free_cancellation": ({"eq"}, {"hotel"}),
+    "hotel_room_type": ({"eq"}, {"hotel"}),
 }
 
 
@@ -113,12 +116,28 @@ class Assumption(Contract):
     authorized_by: str | None
 
 
+class AmbiguityOption(Contract):
+    """Вариант ответа на уточнение, выбираемый нажатием (DATE-003): предложение дат, а не бронь."""
+
+    option_id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=200)
+    date_from: date
+    date_to: date
+
+    @model_validator(mode="after")
+    def _order(self) -> AmbiguityOption:
+        if self.date_to <= self.date_from:
+            raise ValueError("дата возвращения варианта должна быть позже даты отъезда")
+        return self
+
+
 class Ambiguity(Contract):
     ambiguity_id: str
     field: str
     question: str
     blocking_class: Literal["blocking_now", "assumable_only_if_authorized", "optional"]
     source_span: str | None
+    options: list[AmbiguityOption] = Field(default_factory=list, max_length=4)
 
 
 class Constraint(VersionedContract):

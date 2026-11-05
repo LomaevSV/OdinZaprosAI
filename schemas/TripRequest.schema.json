@@ -36,6 +36,14 @@
             }
           ],
           "title": "Source Span"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AmbiguityOption"
+          },
+          "maxItems": 4,
+          "title": "Options",
+          "type": "array"
         }
       },
       "required": [
@@ -46,6 +54,42 @@
         "source_span"
       ],
       "title": "Ambiguity",
+      "type": "object"
+    },
+    "AmbiguityOption": {
+      "additionalProperties": false,
+      "description": "Вариант ответа на уточнение, выбираемый нажатием (DATE-003): предложение дат, а не бронь.",
+      "properties": {
+        "option_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "date_from": {
+          "format": "date",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "format": "date",
+          "title": "Date To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label",
+        "date_from",
+        "date_to"
+      ],
+      "title": "AmbiguityOption",
       "type": "object"
     },
     "Assumption": {
@@ -148,7 +192,8 @@
             "pets",
             "hotel_breakfast",
             "hotel_stars_min",
-            "hotel_free_cancellation"
+            "hotel_free_cancellation",
+            "hotel_room_type"
           ],
           "title": "Field",
           "type": "string"

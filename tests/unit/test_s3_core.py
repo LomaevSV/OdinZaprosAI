@@ -334,9 +334,12 @@ def test_calendar_does_not_invent_dates() -> None:
     ambiguous, resolution = resolve_date_expression("в следующие выходные", REF, "Europe/Moscow")
     assert ambiguous.status == "ambiguous" and ambiguous.resolved_start is None
     assert len(resolution.candidates) == 2
-    for phrase in ("когда-нибудь летом", "31 февраля", "30.13"):
+    for phrase in ("когда-нибудь потом", "31 февраля", "30.13"):
         expression, _ = resolve_date_expression(phrase, REF, "Europe/Moscow")
         assert expression.status == "unresolved" and expression.resolved_start is None
+    # DATE-003: «летом» — период (несколько толкований до выбора), конкретная дата не выдумывается.
+    summer, _ = resolve_date_expression("когда-нибудь летом", REF, "Europe/Moscow")
+    assert summer.status == "ambiguous" and summer.resolved_start is None and summer.resolved_end is None
     no_zone, _ = resolve_date_expression("завтра", REF, None)
     assert no_zone.status == "unresolved" and "DEC-34" in no_zone.rule
 

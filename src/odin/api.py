@@ -224,8 +224,11 @@ def create_app(settings: Settings | None = None, *, application: Application | N
             trip_revision=body.trip_revision,
             text=None if body.form is not None else body.text,
             form=body.form,
+            choice=body.choice,
         )
-        if body.form is not None:
+        if body.choice is not None:
+            input_mode = "choice"
+        elif body.form is not None:
             input_mode = "structured_form"
         elif result.input_mode in ("free_text_llm", "free_text_replay", "llm_unavailable"):
             input_mode = result.input_mode

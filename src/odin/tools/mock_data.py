@@ -63,6 +63,7 @@ DEMO_PLACES: tuple[DemoPlace, ...] = (
     DemoPlace("Калининград", ("калининград", "kaliningrad"), "RU", "Europe/Kaliningrad", 54.7104, 20.4522),
     DemoPlace("Екатеринбург", ("екатеринбург", "ekaterinburg"), "RU", "Asia/Yekaterinburg", 56.8389, 60.6057),
     DemoPlace("Новосибирск", ("новосибирск", "novosibirsk"), "RU", "Asia/Novosibirsk", 55.0084, 82.9357),
+    DemoPlace("Владивосток", ("владивосток", "vladivostok"), "RU", "Asia/Vladivostok", 43.1155, 131.8855),
 )
 
 

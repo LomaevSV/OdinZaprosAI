@@ -26,7 +26,9 @@ pytestmark = pytest.mark.req("INTERPRET-01", "UC-01", "T-UNIT-INTEGRATION-V2-V6"
 REFERENCE = datetime(2026, 10, 25, 9, 0, tzinfo=UTC)
 
 
-def _apply(text: str, payload: dict[str, Any], base: StructuredForm | None = None) -> tuple[StructuredForm, Any]:
+def _apply(
+    text: str, payload: dict[str, Any], base: StructuredForm | None = None
+) -> tuple[StructuredForm, Any]:
     delta = InterpretationDelta.model_validate(payload)
     return apply_delta(delta, text=text, base=base or StructuredForm(), reference_datetime=REFERENCE)
 
@@ -108,21 +110,53 @@ def test_substituted_city_is_rejected(text: str, field: str, value: str, span: s
     ("text", "field", "payload", "attr", "expected"),
     [
         # явная обязательность важнее ответа модели
-        ("Не дороже 40000 рублей", "budget", {"amount": "40000", "currency": "RUB", "required": False},
-         "budget_required", True),
+        (
+            "Не дороже 40000 рублей",
+            "budget",
+            {"amount": "40000", "currency": "RUB", "required": False},
+            "budget_required",
+            True,
+        ),
         ("Только 4 звезды", "stars_min", {"value": 4, "required": False}, "stars_required", True),
         # явное пожелание не превращается в обязательное
-        ("Желательно с завтраком", "breakfast", {"value": True, "required": True}, "breakfast_required", False),
+        (
+            "Желательно с завтраком",
+            "breakfast",
+            {"value": True, "required": True},
+            "breakfast_required",
+            False,
+        ),
         # «не обязательно» — не признак обязательности (ошибка исходного регулярного выражения аудита)
-        ("Завтрак не обязательно", "breakfast", {"value": True, "required": True}, "breakfast_required", False),
-        ("Отмена необязательна", "free_cancellation", {"value": True, "required": True},
-         "free_cancellation_required", False),
+        (
+            "Завтрак не обязательно",
+            "breakfast",
+            {"value": True, "required": True},
+            "breakfast_required",
+            False,
+        ),
+        (
+            "Отмена необязательна",
+            "free_cancellation",
+            {"value": True, "required": True},
+            "free_cancellation_required",
+            False,
+        ),
         # противоречивые признаки — решение модели сохраняется
-        ("Желательно не дороже 50 тысяч рублей", "budget",
-         {"amount": "50000", "currency": "RUB", "required": False}, "budget_required", False),
+        (
+            "Желательно не дороже 50 тысяч рублей",
+            "budget",
+            {"amount": "50000", "currency": "RUB", "required": False},
+            "budget_required",
+            False,
+        ),
         # признаков нет — решение модели сохраняется
-        ("Уложиться в 50 тысяч рублей", "budget", {"amount": "50000", "currency": "RUB", "required": True},
-         "budget_required", True),
+        (
+            "Уложиться в 50 тысяч рублей",
+            "budget",
+            {"amount": "50000", "currency": "RUB", "required": True},
+            "budget_required",
+            True,
+        ),
     ],
 )
 def test_requiredness_follows_explicit_wording(
@@ -228,7 +262,12 @@ def test_change_of_agreed_budget_and_transport_in_one_message() -> None:
     """Изменение ранее согласованных параметров: новое значение и отмена в одном сообщении."""
     text = "Теперь бюджет до 60 тысяч рублей, и можно и самолётом"
     payload = {
-        "budget": {"amount": "60000", "currency": "RUB", "required": False, "span": "бюджет до 60 тысяч рублей"},
+        "budget": {
+            "amount": "60000",
+            "currency": "RUB",
+            "required": False,
+            "span": "бюджет до 60 тысяч рублей",
+        },
         "clear": [{"field": "transport", "span": "можно и самолётом"}],
     }
     form, report = _apply(text, payload, _BASE)
@@ -255,7 +294,12 @@ def _evaluation(cid: str, status: str) -> ConstraintEvaluation:
 
 def _group(gid: str, operator: str, children: list[str]) -> ConstraintGroup:
     return ConstraintGroup(
-        group_id=gid, operator=operator, children=children, scope="hotel", activation=None, raw_text=None  # type: ignore[arg-type]
+        group_id=gid,
+        operator=operator,
+        children=children,
+        scope="hotel",
+        activation=None,
+        raw_text=None,  # type: ignore[arg-type]
     )
 
 
@@ -322,6 +366,7 @@ def test_component_budget_with_unknown_currency_is_unknown(amount: Decimal) -> N
         confidence=None,
         ambiguity=None,
     )
-    facts = OfferFacts(component_id="o-1", role="hotel", total_amount=amount, currency=None,
-                       price_completeness="complete")
+    facts = OfferFacts(
+        component_id="o-1", role="hotel", total_amount=amount, currency=None, price_completeness="complete"
+    )
     assert evaluate_constraint(constraint, facts).status == "unknown"

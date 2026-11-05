@@ -1,14 +1,14 @@
 # Манифест релиза (`release_manifest`) — ТЗ 0.7 §12, ACCEPT-01 п. 8
 #
-# Состояние на 25.10.2026 (срез S7, локальные коммиты; push не выполнялся — DEC-05).
-# Фактические результаты тестов и отчёты — docs/reports/S7_REPORT.md.
+# Состояние на 28.10.2026: кандидат поставки — коммит подготовки поверх 67a9da9 (ветка integration/20261027).
+# История срезов: docs/reports/S1…S8_REPORT.md; результаты этапов 59–63 — адресные тесты (см. README).
 
 schema_version: "1.0.0"
 application: odin-zapros
 version: "0.2.0"
 contracts_schema_version: "1.0.0"
-release_kind: "внутренний срез S7 (LLM + Live-адаптеры); не финальная сдача"
-date: "2026-10-25"
+release_kind: "кандидат финальной сдачи; блокеры ниже открыты"
+date: "2026-10-28"
 
 configuration_defaults:
   ODIN_DATA_MODE: auto        # без ключа LLM — mock (резерв); при настроенной LLM — live (без подмены на Mock)
@@ -30,11 +30,13 @@ llm: >
   Передаётся только текущее сообщение без секретов и персональных номеров; тексты не журналируются.
 
 checks:
-  pytest: "см. docs/reports/S7_REPORT.md"
+  pytest: "27.10: полный набор без tests/live — 893 passed; 28.10: адресные тесты этапов 59–63 — PASS, полный набор не перезапускался"
   ruff: "check и format --check без замечаний"
   schema_snapshot: "python -m odin.contracts.schema_export --check"
   openapi_snapshot: "python -m odin.openapi_snapshot --check"
   docker_clean_run: "BLOCKED до журнала запуска в отдельной среде (docs/DOCKER_CHECK.md, DEC-06)"
+  docker_team_server: "28.10: изолированный контейнер healthy (data=live, llm=live) на сервере команды — не чистая сборка"
+  llm_live: "28.10: реальная модель обработала запрос на сервере команды"
 
 # Обязательные блокеры финальной сдачи («Правила по технике», DEC-32): без них сдача не выполнена.
 submission_blockers:
@@ -48,6 +50,9 @@ submission_blockers:
   - id: submission_tag
     status: open
     requirement: "git-тег submission на последнем коммите основной ветки в репозитории организации"
+  - id: default_branch
+    status: open
+    requirement: "рабочая версия в основной ветке: сейчас master отстаёт от integration/20261027"
 
 known_limitations:
   - "наличие мест и номеров из поисковой выдачи — unknown; детские ж/д тарифы не запрашиваются"

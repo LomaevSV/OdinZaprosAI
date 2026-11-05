@@ -6,10 +6,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 from typing import Any
 
 from odin.config import Limits, Settings
@@ -29,8 +34,10 @@ from odin.contracts import (
     TripRequest,
     TripState,
 )
-from odin.contracts.api import StructuredForm
+from odin.contracts.api import ChoiceAnswer, StructuredForm
+from odin.contracts.common import Deviation
 from odin.contracts.plan import CartItem
+from odin.core import calendar
 from odin.core.cart import CartError, CartStaleError, build_cart, confirm_cart, decline_cart
 from odin.core.clarify import detect_changes, merge_answer
 from odin.core.constraints import (
@@ -40,7 +47,7 @@ from odin.core.constraints import (
     rank_key,
     sort_by_rank,
 )
-from odin.core.money import sum_prices, total_price
+from odin.core.money import known_amount_in_currency, sum_prices_or_unresolved, total_price
 from odin.core.replan import changed_groups, invalidated_roles, split_change_set
 from odin.core.tree import coverage, tradeoffs
 from odin.core.trip import (
@@ -53,6 +60,7 @@ from odin.core.trip import (
 from odin.llm.composer import ComposerFacts, check_rewrite, facts_payload, money_text, safe_answer
 from odin.llm.free_text import (
     INTERPRETER_SCHEMA_VERSION,
+    InterpretationDelta,
     awaiting_fields,
     outcome_from_delta,
     parse_delta,
@@ -162,6 +170,8 @@ def _constraint_label(constraint: Any, currency: str | None = None, *, mark_requ
         label = "бесплатная отмена" if value else "без требования бесплатной отмены"
     elif field_name == "pets":
         label = "размещение и проезд с животным"
+    elif field_name == "hotel_room_type":
+        label = "семейный номер (пожелание)"
     else:
         label = str(field_name)
     return label + (" (обязательно)" if mark_required and constraint.requiredness == "required" else "")
@@ -259,6 +269,11 @@ def _parse_selection_note(note: str | None) -> dict[str, str]:
     return {role: offer_id for role, offer_id in pairs}
 
 
+def _destination_only(form: StructuredForm) -> bool:
+    """Выбор направления нажатием: в форме передано только «куда» (CITY-001/002)."""
+    return form.model_fields_set == {"destination"} and bool(form.destination and form.destination.strip())
+
+
 @dataclass(slots=True)
 class TurnResult:
     state: TripState
@@ -332,6 +347,12 @@ class Orchestrator:
         self._places: dict[str, ResolvedPlace] = {}
         # Уведомления хода о сбоях Live и замене на ДЕМО: попадают в ответ (нет незаметной подмены).
         self._turn_notices: list[str] = []
+        # UI-003: ход из формы («Без LLM») не обращается к LLM — ни к Интерпретатору, ни к Composer.
+        self._turn_llm_allowed = True
+        # LLM-CONCURRENCY-01: бюджеты LLM и инструментов, журнал вызовов и уведомления — состояние одного хода
+        # в общем экземпляре. session_lock разделяет только ходы одной сессии, поэтому ходы разных сессий
+        # выполняются по очереди: иначе начало чужого хода сбрасывало бы бюджет посреди текущего.
+        self._turn_lock = threading.RLock()
 
     def _now(self) -> datetime:
         return self.clock()
@@ -436,38 +457,122 @@ class Orchestrator:
         trip_revision: int,
         text: str | None = None,
         form: StructuredForm | None = None,
+        choice: ChoiceAnswer | None = None,
     ) -> TurnResult:
         session = self.storage.get_session(session_id)
         trip_id = session["trip_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            self._turn_lock,
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             current = self.storage.get_state(trip_id)
-            self._start_turn(session_id, request_id, trip_id)
+            # Ход из формы и выбор варианта нажатием обрабатываются без LLM (UI-003, DATE-003).
+            self._start_turn(session_id, request_id, trip_id, llm_allowed=form is None and choice is None)
+            started = time.perf_counter()
+            try:
+                return self._handle_message_body(
+                    current,
+                    session_id=session_id,
+                    request_id=request_id,
+                    trip_id=trip_id,
+                    text=text,
+                    form=form,
+                    choice=choice,
+                )
+            except Exception as exc:
+                self._turn_failed(session_id, request_id, trip_id, exc, started)
+                raise
+            finally:
+                self._end_turn()
+
+    def _turn_failed(
+        self,
+        session_id: str,
+        request_id: str,
+        trip_id: str,
+        exc: Exception,
+        started: float,
+    ) -> None:
+        """Диагностика неудачного хода. Ошибки журналирования не подменяют исходное исключение."""
+        payload = {
+            "request_id": request_id,
+            "error_code": type(exc).__name__,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+        for record in (
+            lambda: self._audit_llm(None, request_id),
+            lambda: self.storage.add_event(session_id, "turn_failed", payload),
+            lambda: self.storage.audit(
+                "turn_failed", request_id=request_id, trip_id=trip_id, session_id=session_id, payload=payload
+            ),
+        ):
+            try:
+                record()
+            except Exception as failure:  # OBS-SPAN-FAIL-01: телеметрия не маскирует бизнес-ошибку
+                logger.warning("turn_failed not recorded: %s", type(failure).__name__)
+
+    def _handle_message_body(
+        self,
+        current: TripState,
+        *,
+        session_id: str,
+        request_id: str,
+        trip_id: str,
+        text: str | None,
+        form: StructuredForm | None,
+        choice: ChoiceAnswer | None = None,
+    ) -> TurnResult:
+        if choice is not None:
+            outcome = self._interpret_choice(
+                session_id=session_id, request_id=request_id, choice=choice, previous=current
+            )
+        else:
             outcome = self._interpret(
                 session_id=session_id, request_id=request_id, text=text, form=form, previous=current
             )
-            # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
-            has_plan = current.plan is not None and bool(current.plan.components)
-            input_mode = INPUT_MODES.get(outcome.mode, "structured_form")
-            if has_plan and current.request is not None and not outcome.free_text_refused:
-                assert current.request is not None
-                if outcome.questions or (
-                    outcome.request is not None
-                    and detect_changes(request_to_form(current.request), request_to_form(outcome.request))
-                ):
-                    result = self._apply_replan(current, outcome, request_id=request_id)
-                    result.input_mode = input_mode
-                    return result
-            result = self._run_turn(current, outcome, request_id)
-            result.input_mode = input_mode
-            return result
+        # Детектор изменений: новое сообщение при собранном плане — пересборка (UC-09, REPLAN-01).
+        has_plan = current.plan is not None and bool(current.plan.components)
+        input_mode = INPUT_MODES.get(outcome.mode, "structured_form")
+        if has_plan and current.request is not None and not outcome.free_text_refused:
+            assert current.request is not None
+            if outcome.questions or (
+                outcome.request is not None
+                and detect_changes(request_to_form(current.request), request_to_form(outcome.request))
+            ):
+                result = self._apply_replan(current, outcome, request_id=request_id)
+                result.input_mode = input_mode
+                return result
+        result = self._run_turn(current, outcome, request_id)
+        result.input_mode = input_mode
+        return result
 
-    def _start_turn(self, session_id: str, request_id: str, trip_id: str) -> None:
+    def _start_turn(
+        self, session_id: str, request_id: str, trip_id: str, *, llm_allowed: bool = True
+    ) -> None:
+        self._turn_llm_allowed = llm_allowed
         self.registry.start_turn(datetime.now(tz=UTC) + timedelta(seconds=self.limits.turn_deadline_s))
-        self.llm.start_turn()
+        self.llm.start_turn(
+            request_id=request_id,
+            session_id=session_id,
+            trip_id=trip_id,
+            attempt_sink=lambda event: self.storage.audit(
+                "llm_http_attempt",
+                request_id=request_id,
+                trip_id=trip_id,
+                session_id=session_id,
+                payload=event,
+            ),
+        )
         self._turn_notices = []
         self.storage.add_event(session_id, "turn_started", {"request_id": request_id})
         self.storage.audit("turn_started", request_id=request_id, trip_id=trip_id, session_id=session_id)
+
+    def _end_turn(self) -> None:
+        """Ход завершён: сброс привязки LLM к запросу (OBS-CONTEXT-03)."""
+        self.llm.attempt_sink = None
+        self._turn_llm_allowed = True
 
     def _run_turn(
         self,
@@ -546,7 +651,7 @@ class Orchestrator:
     def _answer(self, facts: ComposerFacts) -> tuple[str, bool]:
         """Шаблон по таблице фактов → (если включён) LLM-Composer → проверка фактов → шаблон при сбое."""
         text_out, verified = safe_answer(facts)
-        if not verified or not self.llm.composer_enabled:
+        if not verified or not self.llm.composer_enabled or not self._turn_llm_allowed:
             return text_out, verified
         result = self.llm.complete_structured(
             role="composer",
@@ -576,10 +681,14 @@ class Orchestrator:
         previous: TripState | None = None,
     ) -> InterpretationOutcome:
         # UC-02: ответ на уточнение дополняет полученное ранее, повторно не спрашиваем.
+        # CITY-001: выбор предложенного направления (форма с одним полем) так же дополняет условия поездки.
         answering = (
             previous is not None
-            and previous.status == "awaiting_clarification"
             and previous.request is not None
+            and (
+                previous.status == "awaiting_clarification"
+                or (form is not None and bool(previous.candidate_destinations))
+            )
         )
 
         def interpret(value: StructuredForm) -> InterpretationOutcome:
@@ -591,12 +700,98 @@ class Orchestrator:
             )
 
         if form is not None:
+            if previous is not None and previous.request is not None and _destination_only(form):
+                return self._interpret_destination(
+                    session_id=session_id, request_id=request_id, form=form, previous=previous
+                )
             return interpret(form)
         if text:
             return self._interpret_text(
                 session_id=session_id, request_id=request_id, text=text, previous=previous
             )
         return refuse_free_text(session_id=session_id, request_id=request_id)
+
+    def _interpret_choice(
+        self, *, session_id: str, request_id: str, choice: ChoiceAnswer, previous: TripState
+    ) -> InterpretationOutcome:
+        """DATE-003: выбранный нажатием вариант дат. Остальные условия и незакрытые уточнения сохраняются.
+
+        Вариант сверяется с уточнением в текущей ревизии поездки. Если уточнение не записано (при собранном
+        плане неудачная пересборка не пишется, REPLAN-02), принимается только вариант с каноническим
+        идентификатором выбранных дат — это явный выбор пользователя, как ввод дат в форме."""
+        request = previous.request
+        if request is None:
+            raise ConflictError("вариант дат больше не актуален: условия поездки изменились")
+        target = next(
+            (item for item in request.ambiguities if item.ambiguity_id == choice.ambiguity_id), None
+        )
+        dates = (choice.date_from, choice.date_to)
+        if target is not None:
+            option = next((item for item in target.options if item.option_id == choice.option_id), None)
+            if option is None or (option.date_from, option.date_to) != dates:
+                raise ConflictError("вариант дат больше не актуален: обновите поездку и выберите снова")
+        else:
+            has_plan = previous.plan is not None and bool(previous.plan.components)
+            current = (request.date_range.start, request.date_range.end) if request.date_range else None
+            if not has_plan or choice.option_id != calendar.window_option_id(*dates):
+                raise ConflictError("вариант дат больше не актуален: обновите поездку и выберите снова")
+            if current == dates:
+                raise ConflictError("эти даты уже выбраны")
+        label = f"Выбраны даты: {calendar.format_window(*dates)}"
+        base = request_to_form(request).evolve(date_from=choice.date_from, date_to=choice.date_to)
+        if request.input_mode == "structured_form":
+            return interpret_structured_form(
+                base, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
+        remaining = [item for item in request.ambiguities if item.ambiguity_id != choice.ambiguity_id]
+        return outcome_from_delta(
+            InterpretationDelta(),
+            text=label,
+            base=base,
+            session_id=session_id,
+            request_id=request_id,
+            reference_datetime=datetime.now(tz=UTC),
+            mode=request.input_mode,
+            previous_constraints=list(request.constraints),
+            timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
+            previous_ambiguities=remaining,
+            previous_date_expressions=list(request.date_expressions),
+        )
+
+    def _interpret_destination(
+        self, *, session_id: str, request_id: str, form: StructuredForm, previous: TripState
+    ) -> InterpretationOutcome:
+        """CITY-002: смена направления нажатием (предложенный город или «Изменить направление»), без LLM.
+
+        Меняется только «куда»; прочие условия (откуда, даты, состав, бюджет, транспорт, пожелания) и
+        незакрытые уточнения диалога сохраняются: фраза даты («послезавтра», «в середине лета») ждёт
+        ответа дальше и не сбрасывается в общий вопрос о датах, как при разборе ручной формы."""
+        request = previous.request
+        assert request is not None and form.destination is not None
+        name = " ".join(form.destination.split())
+        base = request_to_form(request).evolve(destination=name)
+        if request.input_mode == "structured_form":
+            return interpret_structured_form(
+                base, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+            )
+        remaining = [item for item in request.ambiguities if item.field != "destination"]
+        outcome = outcome_from_delta(
+            InterpretationDelta(),
+            text=f"Выбрано направление: {name}",
+            base=base,
+            session_id=session_id,
+            request_id=request_id,
+            reference_datetime=datetime.now(tz=UTC),
+            mode=request.input_mode,
+            previous_constraints=list(request.constraints),
+            timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
+            previous_ambiguities=remaining,
+            previous_date_expressions=list(request.date_expressions),
+        )
+        chosen = outcome.request.destination.name if outcome.request and outcome.request.destination else name
+        return replace(
+            outcome, notes=[f"Направление: {chosen}; прочие условия поездки сохранены", *outcome.notes]
+        )
 
     def _interpret_text(
         self, *, session_id: str, request_id: str, text: str, previous: TripState | None
@@ -668,6 +863,7 @@ class Orchestrator:
             previous_constraints=list(previous.request.constraints) if known else None,  # type: ignore[union-attr]
             timezone_for=self._timezone_resolver(request_id) if self.live_data else None,
             previous_ambiguities=list(previous.request.ambiguities) if known else None,  # type: ignore[union-attr]
+            previous_date_expressions=list(previous.request.date_expressions) if known else None,  # type: ignore[union-attr]
         )
         if mode == "free_text_replay":
             outcome = replace(outcome, notes=[*outcome.notes, *result.uncertainties])
@@ -839,11 +1035,12 @@ class Orchestrator:
         source = mock_source(
             "estimate_destination_cost", candidate.candidate_id, as_of, source_type="computed"
         )
-        totals = sum_prices([price for _, price in known], [role for role, _ in known])
-        # Трансфер не оценивается (DEC-18): итог не может быть полным.
+        totals = sum_prices_or_unresolved([price for _, price in known], [role for role, _ in known])
+        currency_unresolved = totals.unknown_reason == "currency_unresolved"
+        # Трансфер не оценивается (DEC-18): итог не может быть полным. Разные валюты (DEC-17): итог неизвестен.
         totals = replace(
             totals,
-            completeness="partial",
+            completeness="unknown" if currency_unresolved else "partial",
             unknown_reason=totals.unknown_reason or "price_incomplete",
             partial_components=(*totals.partial_components, *missing, "transfer"),
         )
@@ -851,6 +1048,8 @@ class Orchestrator:
         duration = outbound.duration_minutes if outbound else None
         prefix = "ДЕМО-оценка" if any(price.source.data_mode == "mock" for _, price in known) else "Оценка"
         note = f"{prefix} за группу и период: дорога и отель; трансфер не оценён (DEC-18)"
+        if currency_unresolved:
+            note += "; цены в разных валютах: общая сумма не вычислена без проверенного курса (DEC-17)"
         if missing:
             note += "; не найдено: " + ", ".join(missing)
         if duration is not None:
@@ -967,13 +1166,14 @@ class Orchestrator:
         return self._finish_search(state, collector, request)
 
     @staticmethod
-    def _hotel_facts(offer: Any, hotel: Any) -> OfferFacts:
+    def _hotel_facts(offer: Any, hotel: Any, request: TripRequest) -> OfferFacts:
         return OfferFacts(
             component_id=offer.offer_id,
             role="hotel",
             total_amount=offer.price_total.amount,
             currency=offer.currency,
             price_completeness=offer.price_total.total_completeness,
+            budget_currency=request.budget.currency if request.budget else None,
             pets_allowed=hotel.pets_allowed if hotel else None,
             breakfast_included=offer.terms.breakfast_included,
             star_rating=hotel.star_rating if hotel else None,
@@ -998,7 +1198,8 @@ class Orchestrator:
                 offer.offer_id,
                 aggregate_statuses(
                     evaluate_constraints(
-                        request.constraints, self._hotel_facts(offer, hotel_by_id.get(offer.hotel_id))
+                        request.constraints,
+                        self._hotel_facts(offer, hotel_by_id.get(offer.hotel_id), request),
                     )
                 ),
                 required_ids,
@@ -1176,7 +1377,7 @@ class Orchestrator:
 
         for offer in state.hotel_offers:
             hotel = hotel_by_id.get(offer.hotel_id)
-            facts = self._hotel_facts(offer, hotel)
+            facts = self._hotel_facts(offer, hotel, request)
             candidates.setdefault("hotel", []).append(
                 (offer.offer_id, offer, evaluate_constraints(request.constraints, facts))
             )
@@ -1187,6 +1388,7 @@ class Orchestrator:
                 total_amount=offer.price.amount,
                 currency=offer.price.currency,
                 price_completeness=offer.price.total_completeness,
+                budget_currency=request.budget.currency if request.budget else None,
                 transport_mode=offer.kind,
                 pets_allowed=offer.pets_allowed,
                 evidence=(f"{offer.source.provider}:{offer.source.tool}",),
@@ -1278,7 +1480,8 @@ class Orchestrator:
                 "build_plan", f"plan-{state.trip_id}-{state.revision}", as_of, source_type="computed"
             )
         plan_id = f"{'P' if plan_mode in ('live', 'replay') else 'DEMO-P'}-{state.trip_id}-{state.revision}"
-        totals = sum_prices(prices, component_ids)
+        # MIXED-CURRENCY-PLAN-01, DEC-17: разные валюты без проверенного курса — итог неизвестен, не HTTP 500.
+        totals = sum_prices_or_unresolved(prices, component_ids)
         # PRICE-01, SCOPE-01: без найденного обязательного компонента итог не может быть полным.
         missing_roles = [role for role in ("hotel", "outbound") if role not in selected]
         if request.return_trip and "return" not in selected:
@@ -1293,11 +1496,15 @@ class Orchestrator:
         total = total_price(totals, plan_source, as_of)
 
         checks = self._connection_checks(selected, hotel_by_id)
-        budget_evaluation = self._budget_evaluation(request, total, state, plan_id=plan_id)
+        budget_evaluation = self._budget_evaluation(
+            request, total, state, plan_id=plan_id, component_prices=prices
+        )
         if budget_evaluation is not None:
             evaluations.append(budget_evaluation)
 
         unknowns: list[str] = list(transfer_unknowns)
+        if totals.unknown_reason == "currency_unresolved":
+            unknowns.append("стоимости в разных валютах: общий итог не вычислен без проверенного курса")
         if "hotel" in selected and state.transfer_options:
             unknowns.append("стоимость трансфера не подтверждена")
         for role, (offer, _, _) in selected.items():
@@ -1420,7 +1627,10 @@ class Orchestrator:
     def open_cart(self, *, trip_id: str, trip_revision: int, request_id: str) -> Cart:
         """Корзина по текущему плану. Новая ревизия поездки фиксирует корзину (REPLAN-02)."""
         session_id = self.storage.get_head(trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             state = self.storage.get_state(trip_id)
             plan = state.plan
@@ -1479,7 +1689,10 @@ class Orchestrator:
         """Демо-подтверждение. Повтор с тем же ``confirmation_id`` возвращает тот же чек (ARCH-05)."""
         cart = self.storage.get_cart(cart_id)
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=cart.trip_id, session_id=session_id),
+        ):
             existing = self.storage.get_receipt_by_confirmation(confirmation_id)
             if existing is not None:
                 if existing.cart_id != cart_id:
@@ -1553,7 +1766,10 @@ class Orchestrator:
         """Отказ: ничего не оформляется, чек не создаётся (UC-08)."""
         cart = self.storage.get_cart(cart_id)
         session_id = self.storage.get_head(cart.trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            _span_scope(request_id=request_id, trip_id=cart.trip_id, session_id=session_id),
+        ):
             self._locked_head(cart.trip_id, trip_revision)
             state = self.storage.get_state(cart.trip_id)
             if cart.trip_revision != trip_revision or state.cart is None or state.cart.cart_id != cart_id:
@@ -1625,7 +1841,11 @@ class Orchestrator:
     ) -> TurnResult:
         """Явная пересборка по ``change_set`` (таблица REPLAN-01). Старая корзина теряет право подтверждения."""
         session_id = self.storage.get_head(trip_id)["session_id"]
-        with self.storage.session_lock(session_id):
+        with (
+            self.storage.session_lock(session_id),
+            self._turn_lock,
+            _span_scope(request_id=request_id, trip_id=trip_id, session_id=session_id),
+        ):
             self._locked_head(trip_id, trip_revision)
             state = self.storage.get_state(trip_id)
             if state.request is None:
@@ -1634,10 +1854,16 @@ class Orchestrator:
             merged = {**request_to_form(state.request).model_dump(), **requested}
             form = StructuredForm.model_validate(merged)
             self._start_turn(session_id, request_id, trip_id)
-            outcome = interpret_structured_form(
-                form, session_id=session_id, request_id=request_id, demo_places=not self.live_data
-            )
-            return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
+            try:
+                outcome = interpret_structured_form(
+                    form, session_id=session_id, request_id=request_id, demo_places=not self.live_data
+                )
+                return self._apply_replan(state, outcome, request_id=request_id, requested=requested)
+            except Exception as exc:
+                self._turn_failed(session_id, request_id, trip_id, exc, time.perf_counter())
+                raise
+            finally:
+                self._end_turn()
 
     def _apply_replan(
         self,
@@ -1895,7 +2121,13 @@ class Orchestrator:
         return risks
 
     def _budget_evaluation(
-        self, request: TripRequest, total: Price, state: TripState, *, plan_id: str | None = None
+        self,
+        request: TripRequest,
+        total: Price,
+        state: TripState,
+        *,
+        plan_id: str | None = None,
+        component_prices: list[Price] | None = None,
     ) -> ConstraintEvaluation | None:
         """Бюджет поездки — по итогу плана (план §2.10 п. 4, §2.23)."""
         constraint = next((item for item in request.constraints if item.field == "budget_total"), None)
@@ -1908,12 +2140,34 @@ class Orchestrator:
             total.currency,
             total.total_completeness,
         )
+        currency_unresolved = total.unknown_reason == "currency_unresolved"
+        if currency_unresolved and status == "unknown":
+            reason = "стоимости в разных валютах: итог не вычислен без проверенного курса (DEC-17)"
+            # MIXED-LOWER-BOUND-02: известные части в валюте бюджета — нижняя граница итога (суммы
+            # неотрицательны, роли компонентов уникальны). Превышение доказано и без пересчёта других валют;
+            # иначе итог остаётся неизвестным, но не matched.
+            lower = known_amount_in_currency(component_prices or [], request.budget.currency)
+            if lower is not None and lower > request.budget.amount:
+                status = "violated"
+                deviation = Deviation(
+                    amount=lower - request.budget.amount,
+                    unit=request.budget.currency,
+                    description="известная часть в валюте бюджета превышает бюджет; другие валюты не учтены",
+                )
+                reason = (
+                    "известная часть стоимости в валюте бюджета больше бюджета; "
+                    "компоненты в других валютах не учтены (DEC-17)"
+                )
         return ConstraintEvaluation(
             constraint_id=constraint.constraint_id,
             component_id=None,
             plan_id=f"DEMO-P-{state.trip_id}-{state.revision}",
             status=status,
-            unknown_reason="price_incomplete" if status == "unknown" else None,
+            unknown_reason=(
+                ("currency_unresolved" if currency_unresolved else "price_incomplete")
+                if status == "unknown"
+                else None
+            ),
             evidence_refs=["computed:plan_total"],
             reason=reason,
             deviation=deviation,
@@ -2107,7 +2361,9 @@ class Orchestrator:
         self.storage.append_revision(state, request_id, agreed=agreed)
         self._audit_llm(state, request_id)
         self.storage.add_event(
-            state.session_id, "turn_finished", {"revision": state.revision, "status": state.status}
+            state.session_id,
+            "turn_finished",
+            {"revision": state.revision, "status": state.status, "request_id": request_id},
         )
         self.storage.audit(
             "turn_finished",
@@ -2152,3 +2408,91 @@ class Orchestrator:
                 "top_k": self.limits.top_k,
             },
         }
+
+
+# Stage 57: low-overhead, non-invasive phase timings; payload never includes user inputs.
+# OBS-SPAN-FAIL-01: диагностика не меняет бизнес-результат и не маскирует исходное исключение.
+# OBS-CONTEXT-03: атрибуция берётся из контекста конкретного запроса, а не из полей экземпляра.
+_SPAN_CONTEXT: ContextVar[dict[str, str | None] | None] = ContextVar("odin_span_context", default=None)
+_SPAN_KEYS = ("request_id", "trip_id", "session_id")
+
+
+@contextmanager
+def _span_scope(*, request_id: str | None, trip_id: str | None, session_id: str | None) -> Iterator[None]:
+    """Привязка этапных записей к конкретному запросу; сбрасывается после операции."""
+    token = _SPAN_CONTEXT.set({"request_id": request_id, "trip_id": trip_id, "session_id": session_id})
+    try:
+        yield
+    finally:
+        _SPAN_CONTEXT.reset(token)
+
+
+def _span_ids(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, str | None]:
+    """Идентификаторы из контекста и аргументов вызова: аргументы точнее и перекрывают контекст."""
+    ids = dict(_SPAN_CONTEXT.get() or {})
+    for key in _SPAN_KEYS:
+        value = kwargs.get(key)
+        if isinstance(value, str):
+            ids[key] = value
+    for value in args[1:]:
+        if isinstance(value, ToolRequest):
+            ids.setdefault("request_id", value.request_id)
+        for key in _SPAN_KEYS:
+            found = getattr(value, key, None)
+            if isinstance(found, str) and not ids.get(key):
+                ids[key] = found
+    return ids
+
+
+def _observed_stage(name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def timed(self: Any, *args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        status, error = "ok", None
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            status, error = "error", type(exc).__name__
+            raise
+        finally:
+            ids = _span_ids(args, kwargs)
+            for key in _SPAN_KEYS:  # запасной путь: контекст прошлых версий и прямые вызовы в тестах
+                if not ids.get(key):
+                    fallback = getattr(self, f"_observed_{key}", None)
+                    if isinstance(fallback, str):
+                        ids[key] = fallback
+            if ids.get("request_id"):
+                try:
+                    self.storage.audit(
+                        "pipeline_span",
+                        request_id=ids["request_id"],
+                        trip_id=ids.get("trip_id"),
+                        session_id=ids.get("session_id"),
+                        payload={
+                            "stage": name,
+                            "status": status,
+                            "error_code": error,
+                            "duration_ms": int((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                except Exception as exc:  # телеметрия не меняет результат и не маскирует ошибку
+                    logger.warning("pipeline_span not recorded (%s): %s", name, type(exc).__name__)
+
+    return timed
+
+
+for _stage in (
+    "_interpret",
+    "_compute_turn",
+    "_search",
+    "_build_plan",
+    "_connection_checks",
+    "_invoke",
+    "_persist",
+    "_apply_replan",
+    "open_cart",
+    "confirm_cart",
+    "decline_cart",
+):
+    if hasattr(Orchestrator, _stage):
+        setattr(Orchestrator, _stage, _observed_stage(_stage, getattr(Orchestrator, _stage)))

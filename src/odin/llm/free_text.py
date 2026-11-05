@@ -23,10 +23,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from odin.contracts import TripRequest
 from odin.contracts.api import StructuredForm
-from odin.contracts.trip import Ambiguity, Constraint, ConstraintGroup, DateExpression, PetInfo
+from odin.contracts.trip import (
+    Ambiguity,
+    AmbiguityOption,
+    Constraint,
+    ConstraintGroup,
+    DateExpression,
+    PetInfo,
+)
 from odin.core import calendar
 from odin.llm.interpreter import InterpretationOutcome, interpret_structured_form
-from odin.tools.mock_data import DEMO_CATALOG, normalize_city
+from odin.tools.mock_data import DEMO_CATALOG, DEMO_PLACES, normalize_city
 
 INTERPRETER_SCHEMA_VERSION = "1.0.0"
 
@@ -372,16 +379,64 @@ def _city_pattern(name: str) -> str:
     return _WORD_START + "".join(pieces) + _WORD_END
 
 
-def _city_evidence_matches(item: TextValue) -> bool:
+_ROLE_MARKER = re.compile(r"(?:^|[\s,.;:!?()])(не\s+)?(из|изо|от|в|во|до|к|ко|на)\s+$")
+_ORIGIN_MARKERS = frozenset({"из", "изо", "от"})
+_WORD_TOKEN = re.compile(r"[а-яa-z0-9]{2,}")
+
+
+def _roles_at(span: str, starts: list[int]) -> list[str]:
+    """Роль каждого упоминания по предлогу непосредственно перед ним (INT-ROLE).
+
+    ``origin`` — «из/изо/от», ``destination`` — «в/во/до/к/ко/на», ``not_*`` — предлог с отрицанием
+    («не из Москвы»), ``none`` — предлога роли нет.
+    """
+    roles: list[str] = []
+    for start in starts:
+        marker = _ROLE_MARKER.search(span[:start])
+        if marker is None:
+            roles.append("none")
+            continue
+        role = "origin" if marker.group(2) in _ORIGIN_MARKERS else "destination"
+        roles.append(f"not_{role}" if marker.group(1) else role)
+    return roles
+
+
+def _span_roles(span: str) -> set[str]:
+    """Роли, которые текст цитаты вообще называет: нужно, чтобы отличить маршрут от одного города."""
+    starts = [match.start() for match in _WORD_TOKEN.finditer(span)]
+    return {role for role in _roles_at(span, starts) if role in ("origin", "destination")}
+
+
+def _city_evidence_matches(item: TextValue, field_name: str | None = None) -> bool:
     """INT-002: город модели должен быть назван в цитате — в любом падеже или известным сокращением.
-    «Из Москвы» → «Сочи» отклоняется; «из Орла» → «Орёл», «в Ростове-на-Дону» → «Ростов-на-Дону» принимаются."""
+    «Из Москвы» → «Сочи» отклоняется; «из Орла» → «Орёл», «в Ростове-на-Дону» → «Ростов-на-Дону» принимаются.
+
+    INT-ROLE: если цитата называет оба направления («из X в Y»), город с предлогом противоположной роли не
+    принимается за это поле; «не из X» роль не подтверждает. Когда роль в цитате одна или не выражена,
+    действует прежняя проверка упоминания — иначе обычные запросы вроде «в Казань» теряли бы город."""
     city = _norm(item.value)
     span = _norm(item.span)
     names = {city}
     for canonical, aliases in _CITY_ALIASES.items():
         if city == canonical or city in aliases:
             names |= {canonical, *aliases}
-    return any(re.search(_city_pattern(name), span) for name in names)
+    starts: list[int] = []
+    seen: set[int] = set()
+    for name in names:
+        for match in re.finditer(_city_pattern(name), span):
+            if match.start() not in seen:
+                seen.add(match.start())
+                starts.append(match.start())
+    roles = _roles_at(span, sorted(starts))
+    if not roles:
+        return False
+    if field_name not in ("origin", "destination"):
+        return True
+    if field_name in roles or all(role == "none" for role in roles):
+        return True
+    if f"not_{field_name}" in roles:
+        return False  # «не из Москвы»: отправление этим городом не подтверждено
+    return field_name not in _span_roles(span)
 
 
 # INT-003: обязательность, явно выраженная в цитате, определяется кодом (промпт, правило 6).
@@ -492,10 +547,31 @@ class DeltaReport:
     notes: list[str] = field(default_factory=list)
     # Длительность названа раньше даты отъезда («на 3 ночи»): хранится до появления даты (UC-02).
     pending_nights: str | None = None
+    # Цитаты условий, распознанных кодом без отдельного поля дельты (INT-007: тип номера).
+    spans: dict[str, str] = field(default_factory=dict)
 
 
 # Уточнения, которые переносятся между ходами через ``TripRequest.ambiguities`` (UC-02: полученное не теряется).
 NIGHTS_PENDING_ID = "amb-llm-nights"
+# DEC-34: относительная фраза даты ждёт часовой пояс пункта отправления.
+DATES_TZ_PENDING_ID = "amb-llm-dates-tz"
+# DATE-003: период («в ноябре») ждёт выбора окна поездки или длительности.
+DATES_PERIOD_PENDING_ID = "amb-llm-dates-period"
+# DATE-002: дата отъезда понятна («завтра»), ждёт дату возвращения или длительность.
+DATES_END_PENDING_ID = "amb-llm-dates-end"
+_DATE_PENDING_IDS = (DATES_TZ_PENDING_ID, DATES_PERIOD_PENDING_ID, DATES_END_PENDING_ID)
+# REPLAN-001: глаголы пребывания — контекст, в котором число без единицы означает ночи.
+_STAY_RE = re.compile(
+    _WORD_START
+    + r"(?:остан\w*|оста[её]м\w*|побуд\w*|задерж\w*|прожив\w*|пожив\w*|продл\w*|переноч\w*)"
+    + _WORD_END
+)
+# INT-006/INT-007: фразы, которые учитываются кодом и не должны попадать в «не удалось учесть».
+_HOTEL_NEEDED_RE = re.compile(
+    r"^(?:и\s+|а\s+|также\s+|еще\s+|ну\s+)?(?:нам\s+|мне\s+)?(?:(?:обязательно|тоже|также)\s+)?"
+    r"(?:нуж(?:ен|на|но|ны)|требуется|надо|понадобится|с)\s+(?:(?:и|тоже|также)\s+)?"
+    r"(?:отел\w*|гостиниц\w*|жиль\w*|проживани\w*|ночлег\w*|размещени\w*)$"
+)
 CHILDREN_PENDING_ID = "amb-llm-children"
 _CHILD_WORDS = re.compile(r"(ребен|ребён|дет(и|ей|ьми|ям)\b|сын|доч|малыш|младен)", re.IGNORECASE)
 
@@ -524,6 +600,7 @@ def _question(
     span: str | None,
     blocking: str = "blocking_now",
     ambiguity_id: str | None = None,
+    options: list[AmbiguityOption] | None = None,
 ) -> Ambiguity:
     return Ambiguity(
         ambiguity_id=ambiguity_id or f"amb-llm-{field_name}",
@@ -531,7 +608,21 @@ def _question(
         question=text,
         blocking_class=blocking,  # type: ignore[arg-type]
         source_span=span,
+        options=options or [],
     )
+
+
+def _date_options(windows: tuple[tuple[Any, Any], ...]) -> list[AmbiguityOption]:
+    """DATE-003: предложенные окна поездки — кнопки выбора (не больше четырёх); это не бронь."""
+    return [
+        AmbiguityOption(
+            option_id=calendar.window_option_id(start, end),
+            label=calendar.format_window(start, end),
+            date_from=start,
+            date_to=end,
+        )
+        for start, end in windows[: calendar.MAX_WINDOWS]
+    ]
 
 
 def _children_question(span: str | None) -> Ambiguity:
@@ -553,6 +644,17 @@ def _nights_pending_question(phrase: str) -> Ambiguity:
     )
 
 
+def _date_end_question(phrase: str, start: Any, origin: str | None, timezone_name: str | None) -> Ambiguity:
+    basis = f", по местной дате в пункте отправления «{origin}»" if timezone_name and origin else ""
+    return _question(
+        "date_to",
+        f"Отъезд — {calendar.format_day(start)} («{phrase}»{basis}). "
+        "Когда обратно: дата возвращения или число ночей?",
+        phrase,
+        ambiguity_id=DATES_END_PENDING_ID,
+    )
+
+
 def pending_from(ambiguities: list[Ambiguity] | None) -> tuple[str | None, Ambiguity | None]:
     """Незакрытые уточнения прошлого хода: (фраза длительности, вопрос о возрасте детей)."""
     nights, children = None, None
@@ -564,6 +666,94 @@ def pending_from(ambiguities: list[Ambiguity] | None) -> tuple[str | None, Ambig
     return nights, children
 
 
+def _city_mention_pattern(name: str) -> str:
+    """Строгий шаблон названия для резервного распознавания (CITY-002): название целиком или основа
+    с обычным падежным окончанием («Казани», «Калининграде»); «сочный» за «Сочи» не принимается."""
+    word = _norm(name)
+    if re.search(r"[-\s]", word):
+        return _city_pattern(word)
+    stem = word[:-1] if word[-1] in _VOWELS + "ьй" else word
+    endings = r"(?:а|у|е|и|ы|ь|ью|ом|ем|ой|ю|я)?"
+    return _WORD_START + "(?:" + re.escape(word) + "|" + re.escape(stem) + endings + ")" + _WORD_END
+
+
+_NEGATED_BEFORE = re.compile(r"(?:^|[\s,.;:!?()])(?:не|нет|кроме|вместо)\s+(?:(?:в|во|на|до)\s+)?$")
+
+
+def _delta_is_empty(delta: InterpretationDelta) -> bool:
+    return all(
+        getattr(delta, name) in (None, []) for name in InterpretationDelta.model_fields if name != "unparsed"
+    )
+
+
+def _destination_fallback(
+    delta: InterpretationDelta,
+    text: str,
+    values: dict[str, Any],
+    previous_ambiguities: list[Ambiguity] | None = None,
+) -> tuple[str, str] | None:
+    """CITY-002: модель не вернула ни «откуда», ни «куда», но в неразобранном фрагменте (или во всём
+    сообщении, если модель ничего не извлекла) назван ровно один известный город без роли «откуда» и без
+    отрицания («Нет, лучше Казань»). Тогда это новое направление. Иначе — ничего не угадывается.
+    Пока город отправления неизвестен или о нём задан вопрос, голый город может быть ответом «откуда» —
+    роль не угадывается."""
+    if delta.destination is not None or delta.origin is not None or not values.get("origin"):
+        return None
+    if any(
+        item.field == "origin" or item.ambiguity_id == DATES_TZ_PENDING_ID
+        for item in previous_ambiguities or []
+    ):
+        return None
+    sources = [fragment for fragment in delta.unparsed if span_in_text(fragment, text)]
+    if _delta_is_empty(delta):
+        sources.append(text)
+    origin = normalize_city(values.get("origin"))
+    found: dict[str, str] = {}
+    rejected: set[str] = set()
+    for source in sources:
+        span = _norm(source)
+        for place in DEMO_PLACES:
+            names = {place.name, *(alias for alias in place.aliases if re.search(r"[а-я]", alias))}
+            for name in names:
+                for match in re.finditer(_city_mention_pattern(name), span):
+                    role = _roles_at(span, [match.start()])[0]
+                    if role in ("origin", "not_destination", "not_origin") or _NEGATED_BEFORE.search(
+                        span[: match.start()]
+                    ):
+                        rejected.add(place.name)
+                    else:
+                        found.setdefault(place.name, source.strip()[:300])
+    chosen = [name for name in found if name not in rejected and (origin is None or name != origin.name)]
+    if len(chosen) != 1:
+        return None
+    name = chosen[0]
+    current = normalize_city(values.get("destination"))
+    if current is not None and current.name == name:
+        return None
+    return name, found[name]
+
+
+def _date_fallback(
+    delta: InterpretationDelta, text: str, values: dict[str, Any]
+) -> tuple[str, str | None] | None:
+    """DATE-004/005: модель не вернула фразу даты. Дословная фраза даты берётся из неразобранного
+    фрагмента; относительная («послезавтра», «через два дня») — и из всего сообщения, пока даты поездки
+    ещё не известны. «Сегодня» без явной привязки к поездке не используется."""
+    if delta.dates is not None and delta.dates.date_phrase:
+        return None
+    for fragment in delta.unparsed:
+        if not span_in_text(fragment, text):
+            continue
+        literal = calendar.literal_date_phrase(fragment)
+        if literal is not None and span_in_text(literal, text):
+            return literal, fragment
+    if values.get("date_from") is None:
+        literal = calendar.literal_date_phrase(text)
+        if literal is not None and literal != "сегодня" and calendar.is_relative_phrase(literal):
+            return literal, None
+    return None
+
+
 def apply_delta(
     delta: InterpretationDelta,
     *,
@@ -572,6 +762,7 @@ def apply_delta(
     reference_datetime: datetime,
     timezone_for: Callable[[str], str | None] | None = None,
     previous_ambiguities: list[Ambiguity] | None = None,
+    previous_date_expressions: list[DateExpression] | None = None,
 ) -> tuple[StructuredForm, DeltaReport]:
     """Накладывает проверенную дельту на прежние условия. Непроверенное значение не применяется."""
     report = DeltaReport()
@@ -585,8 +776,9 @@ def apply_delta(
             reason = "фрагмент не найден в сообщении"
         elif not _numeric_evidence_matches(name, item):
             reason = "число не совпадает с названным в сообщении"  # INT-001/INT-004
-        elif name in ("origin", "destination") and not _city_evidence_matches(item):  # type: ignore[arg-type]
-            reason = "город не назван в цитате"  # INT-002
+        elif name in ("origin", "destination") and not _city_evidence_matches(item, name):  # type: ignore[arg-type]
+            mentioned = _city_evidence_matches(item)  # INT-002: город назван, но в другой роли (INT-ROLE)
+            reason = "город назван в другой роли" if mentioned else "город не назван в цитате"
         else:
             report.accepted.append(name)
             return True
@@ -639,6 +831,12 @@ def apply_delta(
     if check("destination", delta.destination):
         assert delta.destination is not None
         values["destination"] = delta.destination.value.strip()
+    used_fragments: set[str] = set()
+    if (city := _destination_fallback(delta, text, values, previous_ambiguities)) is not None:
+        values["destination"], fragment = city
+        used_fragments.add(fragment)
+        report.accepted.append("destination")
+        report.notes.append(f"Направление изменено: «{city[0]}» (по фразе «{fragment[:120]}»)")
     if check("adults", delta.adults):
         assert delta.adults is not None
         values["adults"] = delta.adults.value
@@ -711,19 +909,98 @@ def apply_delta(
         if unknown:
             report.unparsed.append(delta.wishes_tags.span)
 
+    pending_dates = _pending_date_phrase(previous_ambiguities, previous_date_expressions)
+    # REPLAN-001: число без единицы («останемся на четыре») — ночи, если контекст однозначен: есть даты
+    # поездки (или ожидаемая фраза даты) и глагол пребывания, либо прошлый ход спрашивал длительность.
+    awaiting_nights = pending_dates is not None and pending_dates[2] in (
+        DATES_PERIOD_PENDING_ID,
+        DATES_END_PENDING_ID,
+    )
+    has_dates = base.date_from is not None or pending_dates is not None
+    bare_count = awaiting_nights or (has_dates and bool(_STAY_RE.search(_norm(text))))
+    dates = delta.dates
+    if (found := _date_fallback(delta, text, values)) is not None:
+        literal, fragment = found
+        dates = DatesValue(date_phrase=literal, nights_phrase=dates.nights_phrase if dates else None)
+        if fragment is not None:
+            used_fragments.add(fragment)
+    if (dates is None or not dates.nights_phrase) and bare_count:
+        for fragment in delta.unparsed:
+            if span_in_text(fragment, text) and calendar.nights_value(fragment, bare_count=True)[0]:
+                # Модель не отнесла фразу к длительности, но контекст однозначен — фраза дословная.
+                dates = DatesValue(date_phrase=dates.date_phrase if dates else None, nights_phrase=fragment)
+                used_fragments.add(fragment)
+                break
+    known_nights = (
+        (base.date_to - base.date_from).days
+        if base.date_from is not None and base.date_to is not None
+        else None
+    )
     _apply_dates(
-        delta.dates,
+        dates,
         text=text,
         values=values,
         reference=reference_datetime,
         report=report,
         resolver=timezone_for,
+        carried_nights=pending_nights,
+        known_nights=known_nights,
+        bare_count=bare_count,
+        start_weekday=calendar.weekday_preference(text),
     )
+    new_phrase = dates is not None and bool(dates.date_phrase)
+    if pending_dates is not None and not new_phrase and values.get("date_from") is None:
+        # DEC-34: фраза прошлого хода («завтра») разрешается, когда стал известен пункт отправления,
+        # от исходной опорной даты; без пояса вопрос повторяется. DATE-002/DATE-003: так же ждут длительность
+        # дата отъезда без возвращения и период («в ноябре»).
+        phrase, original_reference, _kind, embedded = pending_dates
+        weekday = calendar.weekday_preference(text)
+        if weekday is None and embedded:
+            weekday = calendar.weekday_preference(embedded)
+        embedded_nights = embedded if embedded and calendar.inline_nights(embedded) else None
+        _resolve_dates(
+            phrase,
+            report.pending_nights or pending_nights or embedded_nights,
+            values=values,
+            reference=original_reference or reference_datetime,
+            report=report,
+            resolver=timezone_for,
+            start_weekday=weekday,
+        )
+        if values.get("date_to") is not None:
+            report.pending_nights = pending_nights = None
+    elif (
+        pending_dates is not None
+        and pending_dates[2] == DATES_END_PENDING_ID
+        and new_phrase
+        and values.get("date_from") is not None
+        and values.get("date_to") is None
+    ):
+        _answer_return_date(pending_dates, values=values, report=report, resolver=timezone_for)
     _apply_pending_nights(report.pending_nights or pending_nights, values=values, report=report)
 
     for fragment in delta.unparsed:
-        if fragment.strip()[:300] == children_span:
-            continue  # фрагмент о детях стал вопросом о возрасте
+        if fragment.strip()[:300] == children_span or fragment in used_fragments:
+            continue  # фрагмент о детях стал вопросом о возрасте, о длительности — длительностью
+        if _absorbed(fragment):
+            continue
+        room = _room_preference(fragment) if span_in_text(fragment, text) else None
+        if room == "soft":
+            # INT-007: мягкое пожелание сохраняется в условиях поездки и переносится между ходами.
+            values["room_type"] = "family"
+            report.accepted.append("room_type")
+            report.spans["hotel_room_type"] = fragment.strip()[:300]
+            report.notes.append(
+                f"Пожелание «{fragment.strip()[:120]}» сохранено как мягкое предпочтение: варианты по нему "
+                "не отсеиваются, тип номера источником не подтверждён"
+            )
+            continue
+        if room == "revoke":
+            if values.get("room_type") is not None:
+                values["room_type"] = None
+                report.accepted.append("clear:room_type")
+                report.notes.append("Пожелание о семейном номере снято")
+            continue
         if span_in_text(fragment, text) and fragment not in report.unparsed:
             report.unparsed.append(fragment.strip()[:300])
 
@@ -742,21 +1019,104 @@ def _transport_modes(value: TransportValue) -> list[str]:
 
 
 def _timezone_for(values: dict[str, Any], resolver: Callable[[str], str | None] | None = None) -> str | None:
-    """Часовой пояс для календаря. В Live — только геокодинг через оркестратор (без демо-справочника,
-    решение 25.10: нет незаметной подмены Live на Mock); в Mock — демо-справочник."""
-    if resolver is not None:
-        for key in ("origin", "destination"):
-            name = values.get(key)
-            if name:
-                zone = resolver(str(name))
-                if zone:
-                    return zone
+    """Часовой пояс для календаря — только пункта отправления (DEC-34). Пояс пункта назначения и пояс по
+    умолчанию не подставляются: без достоверного пояса отправления календарь сам решает, влияет ли это на
+    результат. В Live — только геокодинг через оркестратор (без демо-справочника, решение 25.10: нет
+    незаметной подмены Live на Mock); в Mock — демо-справочник."""
+    name = values.get("origin")
+    if not name:
         return None
-    for key in ("origin", "destination"):
-        place = normalize_city(values.get(key))
-        if place is not None:
-            return place.timezone
+    if resolver is not None:
+        return resolver(str(name)) or None
+    place = normalize_city(name)
+    return place.timezone if place is not None else None
+
+
+def _timezone_question(phrase: str, origin: str | None) -> Ambiguity:
+    if origin:
+        reason = f"часовой пояс пункта отправления «{origin}» не определён"
+        ask = "Назовите даты числами."
+    else:
+        reason = "пункт отправления ещё не назван"
+        ask = "Назовите город отправления или даты числами."
+    return _question(
+        "date_from",
+        f"Уточните даты: «{phrase}» считается по местной дате в пункте отправления, а {reason}. {ask}",
+        phrase,
+        ambiguity_id=DATES_TZ_PENDING_ID,
+    )
+
+
+def _pending_date_phrase(
+    ambiguities: list[Ambiguity] | None, expressions: list[DateExpression] | None
+) -> tuple[str, datetime | None, str, str | None] | None:
+    """Фраза даты прошлого хода, ожидающая пояс отправления, длительность или выбор окна: (фраза даты,
+    исходная опорная дата, вид ожидания, длительность, сохранённая вместе с периодом)."""
+    for item in ambiguities or []:
+        if item.ambiguity_id in _DATE_PENDING_IDS and item.source_span:
+            span = item.source_span
+            for expression in reversed(expressions or []):
+                if not span.startswith(expression.raw_text):
+                    continue
+                if item.ambiguity_id == DATES_TZ_PENDING_ID and expression.timezone is not None:
+                    continue
+                embedded = span[len(expression.raw_text) :].strip() or None
+                return expression.raw_text, expression.reference_datetime, item.ambiguity_id, embedded
+            return span, None, item.ambiguity_id, None
     return None
+
+
+def _absorbed(fragment: str) -> bool:
+    """INT-006: «Нужен отель» — проживание и так входит в подбор; это не «неучтённое» условие."""
+    cleaned = re.sub(r"[,.;:!?]+", " ", _norm(fragment))
+    return bool(_HOTEL_NEEDED_RE.match(" ".join(cleaned.split())))
+
+
+_FAMILY_ROOM_RE = re.compile(
+    _WORD_START + r"(?:семейн\w*\s+(?:номер\w*|комнат\w*|размещени\w*)|номер\w*\s+для\s+семь\w*)" + _WORD_END
+)
+
+
+_ROOM_REVOKE_RE = re.compile(
+    _WORD_START
+    + r"(?:не\s+(?:нуж(?:ен|на|но|ны)|обязател\w*|важ\w*)|необязател\w*|неважн\w*|без\s+семейн\w*|"
+    r"любой\s+номер|все\s+равно)" + _WORD_END
+)
+
+
+def _room_preference(fragment: str) -> str | None:
+    """INT-007: «желательно семейный номер» — мягкое пожелание ("soft"); «семейный номер не нужен» — отмена
+    ("revoke"). Обязательное требование так не учитывается (проверить его по источнику нельзя) и остаётся
+    в «не удалось учесть»."""
+    text = _norm(fragment)
+    if not _FAMILY_ROOM_RE.search(text):
+        return None
+    if _ROOM_REVOKE_RE.search(text):
+        return "revoke"
+    required = _MANDATORY_RE.search(text) or re.search(
+        _WORD_START + r"(?:нуж(?:ен|на|но|ны)|требуется)", text
+    )
+    return None if required else "soft"
+
+
+def _answer_return_date(
+    pending: tuple[str, datetime | None, str, str | None],
+    *,
+    values: dict[str, Any],
+    report: DeltaReport,
+    resolver: Callable[[str], str | None] | None,
+) -> None:
+    """DATE-002: на вопрос «когда обратно?» названа одна дата — это дата возвращения, а не новый отъезд."""
+    phrase, reference, _kind, _nights = pending
+    if reference is None:
+        return
+    previous = calendar.resolve_trip_dates(phrase, None, reference, _timezone_for(values, resolver))
+    answer = values["date_from"]
+    if previous.status != "partial" or previous.start is None or answer <= previous.start:
+        return
+    report.date_expressions.extend(previous.expressions)
+    values["date_from"], values["date_to"] = previous.start, answer
+    report.questions = [q for q in report.questions if q.field not in ("date_from", "date_to")]
 
 
 def _apply_dates(
@@ -767,52 +1127,137 @@ def _apply_dates(
     reference: datetime,
     report: DeltaReport,
     resolver: Callable[[str], str | None] | None = None,
+    carried_nights: str | None = None,
+    known_nights: int | None = None,
+    bare_count: bool = False,
+    start_weekday: int | None = None,
 ) -> None:
     if dates is None or not dates.date_phrase:
         if dates is not None and dates.nights_phrase:
+            nights_ok = calendar.nights_value(dates.nights_phrase, bare_count=bare_count)[0]
             if values.get("date_from") is not None:
                 # «давай на 4 ночи» при уже известной дате отъезда
-                _apply_nights_only(dates.nights_phrase, text=text, values=values, report=report)
-            elif span_in_text(dates.nights_phrase, text) and calendar.nights_value(dates.nights_phrase)[0]:
+                _apply_nights_only(
+                    dates.nights_phrase, text=text, values=values, report=report, bare_count=bare_count
+                )
+            elif span_in_text(dates.nights_phrase, text) and nights_ok:
                 # «на 3 ночи» без даты отъезда: длительность сохраняется до появления даты (UC-02)
-                report.pending_nights = dates.nights_phrase.strip()
+                report.pending_nights = (
+                    dates.nights_phrase.strip() if not bare_count else calendar.nights_phrase(nights_ok)
+                )
             else:
                 report.rejected.append("nights")
         return
-    if not span_in_text(dates.date_phrase, text):
-        report.rejected.append("dates")
-        report.questions.append(_question("date_from", "Уточните даты поездки: отъезд и возвращение.", None))
-        return
+    date_phrase = dates.date_phrase
+    if not span_in_text(date_phrase, text):
+        # DATE-002: модель вернула вычисленную дату («29 октября») вместо цитаты «завтра». Даты считает код:
+        # берётся единственная однозначная фраза даты из самого сообщения, иначе — вопрос.
+        literal = calendar.literal_date_phrase(text)
+        if literal is None:
+            report.rejected.append("dates")
+            report.questions.append(
+                _question("date_from", "Уточните даты поездки: отъезд и возвращение.", None)
+            )
+            return
+        date_phrase = literal
     nights_phrase = dates.nights_phrase
     if nights_phrase and not span_in_text(nights_phrase, text):
         report.rejected.append("nights")
         nights_phrase = None
+    _resolve_dates(
+        date_phrase,
+        nights_phrase or carried_nights,
+        values=values,
+        reference=reference,
+        report=report,
+        resolver=resolver,
+        known_nights=known_nights,
+        bare_count=bare_count,
+        start_weekday=start_weekday,
+    )
+
+
+def _resolve_dates(
+    date_phrase: str,
+    nights_phrase: str | None,
+    *,
+    values: dict[str, Any],
+    reference: datetime,
+    report: DeltaReport,
+    resolver: Callable[[str], str | None] | None,
+    known_nights: int | None = None,
+    bare_count: bool = False,
+    start_weekday: int | None = None,
+) -> None:
+    timezone_name = _timezone_for(values, resolver)
     resolved = calendar.resolve_trip_dates(
-        dates.date_phrase, nights_phrase, reference, _timezone_for(values, resolver)
+        date_phrase,
+        nights_phrase,
+        reference,
+        timezone_name,
+        known_nights=known_nights,
+        bare_count=bare_count,
+        start_weekday=start_weekday,
     )
     report.date_expressions.extend(resolved.expressions)
     if resolved.status == "resolved":
         report.accepted.append("dates")
         values["date_from"] = resolved.start
         values["date_to"] = resolved.end
+        if not nights_phrase and known_nights and resolved.rule.endswith(f"сохранена: {known_nights}"):
+            report.notes.append(
+                f"Длительность текущих условий сохранена: {known_nights} {calendar.nights_word(known_nights)}"
+            )
         return
     if resolved.status == "partial":
+        # DATE-002: дата отъезда понятна — спрашивается только недостающее (возвращение или длительность);
+        # фраза ждёт ответа следующего хода от исходной опорной даты.
         report.accepted.append("dates")
         values["date_from"] = resolved.start
         values["date_to"] = None
+        report.questions.append(
+            _date_end_question(date_phrase.strip(), resolved.start, values.get("origin"), timezone_name)
+        )
+        return
+    if resolved.status == "period":
+        # DATE-003: период — ограничение, а не даты. Прежние даты не выдаются за согласованные; выбор окна
+        # или длительности — следующим ходом. Длительность сохраняется вместе с фразой периода.
+        values["date_from"] = values["date_to"] = None
+        span = date_phrase.strip()
+        # Длительность и день отъезда хранятся вместе с фразой периода до выбора варианта.
+        if resolved.nights:
+            span = f"{span} {calendar.nights_phrase(resolved.nights)}"
+        if resolved.start_weekday is not None:
+            span = f"{span} {calendar.weekday_preference_phrase(resolved.start_weekday)}"
+        report.questions.append(
+            _question(
+                "date_from",
+                resolved.question or "",
+                span,
+                ambiguity_id=DATES_PERIOD_PENDING_ID,
+                options=_date_options(resolved.windows),
+            )
+        )
+        return
+    if resolved.needs_timezone:
+        # DEC-34: пояс не угадывается; фраза ждёт пункт отправления, длительность сохраняется (UC-02).
+        report.questions.append(_timezone_question(date_phrase.strip(), values.get("origin")))
+        if nights_phrase and calendar.nights_value(nights_phrase, bare_count=bare_count)[0]:
+            report.pending_nights = nights_phrase.strip()
         return
     if resolved.start is not None:
         # Дата отъезда понятна, длительность — нет: дата сохраняется, вопрос — только о ночах.
         values["date_from"] = resolved.start
         values["date_to"] = None
-        span = nights_phrase or dates.date_phrase
+        span = nights_phrase or date_phrase
     else:
-        span = dates.date_phrase
+        span = date_phrase
     report.questions.append(
         _question(
             "date_from",
             resolved.question or "Уточните даты поездки: отъезд и возвращение.",
             span,
+            options=_date_options(resolved.windows),
         )
     )
 
@@ -826,8 +1271,14 @@ def _apply_pending_nights(phrase: str | None, *, values: dict[str, Any], report:
     if not nights:
         return
     if values.get("date_from") is None:
+        if any(q.ambiguity_id == DATES_PERIOD_PENDING_ID for q in report.questions):
+            return  # длительность уже учтена в вопросе о периоде и хранится вместе с ним
         report.pending_nights = phrase
-        report.questions = [q for q in report.questions if q.field not in ("date_from", "date_to")]
+        report.questions = [
+            q
+            for q in report.questions
+            if q.field not in ("date_from", "date_to") or q.ambiguity_id == DATES_TZ_PENDING_ID
+        ]
         report.questions.append(_nights_pending_question(phrase))
         return
     if values.get("date_to") is None:
@@ -836,11 +1287,13 @@ def _apply_pending_nights(phrase: str | None, *, values: dict[str, Any], report:
         report.accepted.append("nights")
 
 
-def _apply_nights_only(phrase: str, *, text: str, values: dict[str, Any], report: DeltaReport) -> None:
+def _apply_nights_only(
+    phrase: str, *, text: str, values: dict[str, Any], report: DeltaReport, bare_count: bool = False
+) -> None:
     if not span_in_text(phrase, text):
         report.rejected.append("nights")
         return
-    nights, status, _rule = calendar.nights_value(phrase)
+    nights, status, _rule = calendar.nights_value(phrase, bare_count=bare_count)
     if nights is None:
         report.questions.append(_question("date_to", f"Сколько ночей длится поездка? («{phrase}»)", phrase))
         return
@@ -872,6 +1325,7 @@ def outcome_from_delta(
     previous_constraints: list[Constraint] | None = None,
     timezone_for: Callable[[str], str | None] | None = None,
     previous_ambiguities: list[Ambiguity] | None = None,
+    previous_date_expressions: list[DateExpression] | None = None,
 ) -> InterpretationOutcome:
     """Полный путь: проверка фрагментов → календарь → форма → ``TripRequest`` → вопросы UC-02."""
     previous_spans = {
@@ -885,6 +1339,7 @@ def outcome_from_delta(
         reference_datetime=reference_datetime,
         timezone_for=timezone_for,
         previous_ambiguities=previous_ambiguities,
+        previous_date_expressions=previous_date_expressions,
     )
     outcome = interpret_structured_form(
         form,
@@ -914,7 +1369,7 @@ def outcome_from_delta(
     ]
     constraints = []
     for constraint in outcome.request.constraints:
-        span = _span_for(delta, constraint.field)
+        span = _span_for(delta, constraint.field) or report.spans.get(constraint.field)
         if span is not None and constraint.field in _fields_from_delta(report):
             constraints.append(constraint.evolve(source_kind="text_span", source_span=span))
         elif constraint.field in previous_spans:
@@ -939,7 +1394,11 @@ def outcome_from_delta(
         request=request,
         mode=mode,
         questions=questions,
-        notes=[*notes, *outcome.notes],
+        # Фраза даты понята (ждёт длительности, возвращения или выбора варианта): «даты не указаны» неверно.
+        notes=[
+            *notes,
+            *(note for note in outcome.notes if not (calendar_dates and note.startswith("даты не указаны"))),
+        ],
         decisions=outcome.decisions,
     )
 
@@ -951,6 +1410,7 @@ _CONSTRAINT_SPAN_FIELD = {
     "hotel_breakfast": "breakfast",
     "hotel_stars_min": "stars_min",
     "hotel_free_cancellation": "free_cancellation",
+    "hotel_room_type": "room_type",
 }
 
 

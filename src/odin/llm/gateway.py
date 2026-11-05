@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -58,6 +60,15 @@ def replay_key(*, text: str, reference_date: str, schema_version: str, role: str
 class LlmBudget:
     calls_used: int = 0
     call_limit: int = 4
+    http_limit: int = 3
+    http_used: int = 0
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def take_http(self) -> None:
+        with self._lock:
+            if self.http_used >= self.http_limit:
+                raise LlmBudgetExceeded("llm_http_attempt_budget_exceeded")
+            self.http_used += 1
 
     def take(self) -> None:
         if self.calls_used >= self.call_limit:
@@ -67,6 +78,10 @@ class LlmBudget:
 
 class LlmBudgetExceeded(RuntimeError):
     pass
+
+
+class LlmAttemptNotRecorded(RuntimeError):
+    """Устойчивая запись попытки не создана — платный POST не отправляется (OBS-ATTEMPT-DURABILITY-02)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +165,13 @@ class LlmGateway:
     client_factory: ClientFactory = default_client_factory
     calls: list[LlmCallRecord] = field(default_factory=list)
     _client: Any = None
+    request_id: str | None = None
+    session_id: str | None = None
+    trip_id: str | None = None
+    attempt_sink: Callable[[dict[str, Any]], None] | None = None
+    _logical_call_id: str | None = None
+    _attempt_index: int = 0
+    _attempt_pending: dict[str, Any] | None = None
 
     @property
     def mode(self) -> LlmMode:
@@ -179,15 +201,82 @@ class LlmGateway:
         }
 
     def set_call_limit(self, limit: int) -> None:
-        self.budget = LlmBudget(call_limit=limit)
+        self.budget = LlmBudget(call_limit=limit, http_limit=self.settings.http_attempts_per_turn)
 
-    def start_turn(self) -> None:
-        self.budget = LlmBudget(call_limit=self.budget.call_limit)
+    def start_turn(
+        self,
+        *,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        trip_id: str | None = None,
+        attempt_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self.budget = LlmBudget(
+            call_limit=self.budget.call_limit, http_limit=self.settings.http_attempts_per_turn
+        )
         self.calls = []
+        self.request_id, self.session_id, self.trip_id = request_id, session_id, trip_id
+        self.attempt_sink = attempt_sink
+        self._attempt_index = 0
+
+    def _attempt_context(self, attempt_id: str) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "trip_id": self.trip_id,
+            "logical_call_id": self._logical_call_id,
+            "attempt_id": attempt_id,
+            "attempt_index": self._attempt_index,
+            "at": datetime.now(UTC).isoformat(),
+        }
+
+    def _before_post(self) -> None:
+        """OBS-NO-SINK-04 / OBS-ATTEMPT-DURABILITY-02: квота и устойчивая запись ``started`` до POST.
+
+        Порядок: сначала квота (превышение — ``LlmBudgetExceeded``, POST не отправляется и записи нет),
+        затем запись резервации. Платный POST без устойчивой диагностики недопустим (fail-closed):
+        нет sink или запись не удалась — ``LlmAttemptNotRecorded``, POST не отправляется.
+        Неизвестный расход без следа хуже, чем пропущенная попытка.
+        """
+        self.budget.take_http()
+        self._attempt_index += 1
+        attempt_id = uuid.uuid4().hex
+        record = {**self._attempt_context(attempt_id), "phase": "started", "status": "pending"}
+        if self.attempt_sink is None:
+            raise LlmAttemptNotRecorded(
+                "llm_attempt_not_recorded: платный POST запрещён без обязательного attempt_sink"
+            )
+        try:
+            self.attempt_sink(record)
+        except Exception as exc:
+            logger.warning("llm attempt reservation not recorded: %s", type(exc).__name__)
+            raise LlmAttemptNotRecorded(
+                "llm_attempt_not_recorded: платный POST отменён, расход не подтверждён диагностикой"
+            ) from exc
+        self._attempt_pending = {"attempt_id": attempt_id}
+
+    def _on_attempt(self, event: dict[str, Any]) -> None:
+        """Итог попытки после ответа. Недоступность sink больше не меняет бизнес-результат.
+
+        Запись ``started`` уже устойчива; если итог записать не удалось, попытка остаётся в журнале как
+        незавершённая (``phase=started`` без ``finished``) — это и есть объявленная граница гарантии.
+        """
+        attempt_id = (self._attempt_pending or {}).get("attempt_id") or uuid.uuid4().hex
+        self._attempt_pending = None
+        record = {**event, **self._attempt_context(attempt_id), "phase": "finished"}
+        if self.attempt_sink is None:
+            return
+        try:
+            self.attempt_sink(record)
+        except Exception as exc:  # телеметрия не меняет бизнес-результат (OBS-SPAN-FAIL-01)
+            logger.warning("llm attempt outcome not recorded: %s", type(exc).__name__)
 
     def _client_instance(self) -> Any:
         if self._client is None:
             self._client = self.client_factory(self.settings)
+        if hasattr(self._client, "before_post"):
+            self._client.before_post = self._before_post
+            self._client.on_attempt = self._on_attempt
         return self._client
 
     # ------------------------------------------------------------------ основной вызов
@@ -265,6 +354,7 @@ class LlmGateway:
                 return AgentResult(
                     agent=role, status="unavailable", structured_output=None, uncertainties=[str(exc)]
                 )
+            self._logical_call_id = uuid.uuid4().hex
             try:
                 result = self._client_instance().complete(messages)
             except Exception as exc:  # адрес вне allowlist и т. п.: без сети и без текста в журнале

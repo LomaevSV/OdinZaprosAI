@@ -179,6 +179,7 @@ class LlmSettings:
     composer: bool = True
     record: bool = False
     retries: int = 1
+    http_attempts_per_turn: int = 3
 
     @property
     def live_enabled(self) -> bool:
@@ -232,7 +233,8 @@ class Settings:
             temperature=_temperature(source),
             composer=_bool(source, "ODIN_LLM_COMPOSER", True),
             record=_bool(source, "ODIN_LLM_RECORD", False),
-            retries=_int(source, "ODIN_LLM_RETRIES", 1),
+            retries=_int(source, "ODIN_LLM_RETRIES", 1, minimum=0),
+            http_attempts_per_turn=_int(source, "ODIN_LLM_HTTP_ATTEMPTS_PER_TURN", 3, minimum=1),
         )
         if llm_mode == "live" and not llm.live_enabled:
             raise ConfigError(
@@ -291,6 +293,7 @@ ENV_VARS = (
     "ODIN_LLM_COMPOSER",
     "ODIN_LLM_RECORD",
     "ODIN_LLM_RETRIES",
+    "ODIN_LLM_HTTP_ATTEMPTS_PER_TURN",
     "ODIN_TURN_DEADLINE_S",
     "ODIN_TOOL_TIMEOUT_S",
     "ODIN_TOOL_RETRIES",
